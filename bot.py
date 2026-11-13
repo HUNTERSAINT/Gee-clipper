@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import re
+import os
 import shutil
 import sys
 import tempfile
@@ -18,6 +19,7 @@ from telegram.ext import (
 
 import config as C
 import core
+import yt_dlp
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -284,6 +286,16 @@ def main():
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is not installed")
     core.prune_cache()
+    cookie_path = C.COOKIES_FILE
+    log.info(
+        "Runtime diagnostics: yt_dlp_version=%s cookies_configured=%s "
+        "cookie_file_exists=%s cookie_file_bytes=%s js_runtime=%s",
+        yt_dlp.version.__version__,
+        bool(cookie_path),
+        bool(cookie_path and os.path.isfile(cookie_path)),
+        os.path.getsize(cookie_path) if cookie_path and os.path.isfile(cookie_path) else 0,
+        C.JS_RUNTIME or "yt-dlp default",
+    )
     app = (
         Application.builder()
         .token(C.TELEGRAM_TOKEN)
