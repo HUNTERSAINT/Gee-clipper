@@ -140,8 +140,7 @@ def download_audio(url: str, workdir: str) -> str:
             info = ydl.extract_info(url, download=True)
             result = ydl.prepare_filename(info)
         log.info("YouTube stage=download_audio success video_id=%s", info.get("id"))
-        log.info("Clip %s stage=complete", idx)
-    return result
+        return result
     except Exception:
         log.exception("YouTube stage=download_audio failed")
         raise
@@ -436,4 +435,5 @@ def make_clip(
         log.info("Clip %s stage=thumbnails success", idx)
     except Exception:
         log.exception("thumbnail generation failed")
+    log.info("Clip %s stage=complete", idx)
     return result
