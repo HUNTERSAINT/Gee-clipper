@@ -22,6 +22,9 @@ import core
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
 )
+# httpx logs full request URLs, and Telegram's URLs contain the bot token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("clipper.bot")
 
 URL_RE = re.compile(r"(https?://\S+)")
