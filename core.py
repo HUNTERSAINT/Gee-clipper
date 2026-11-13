@@ -15,6 +15,30 @@ import config as C
 import video as V
 
 log = logging.getLogger("clipper.core")
+
+
+def _safe_ydl_message(message) -> str:
+    """Remove URL query strings and credential-like headers before logging."""
+    text = str(message)
+    text = re.sub(r"(https?://[^\\s?]+)\\?[^\\s]+", r"\\1?[query redacted]", text)
+    text = re.sub(r"(?i)(cookie|authorization):\\s*[^\\r\\n]+", r"\\1: [redacted]", text)
+    text = re.sub(r"(?i)(sid|sapisid|token)=([^&\\s]+)", r"\\1=[redacted]", text)
+    return text[:1200]
+
+
+class YtDlpLogBridge:
+    """Forward useful yt-dlp diagnostics to Railway without verbose secrets."""
+    def debug(self, message):
+        # yt-dlp debug output can contain request details; keep it disabled.
+        pass
+
+    def warning(self, message):
+        log.warning("yt-dlp: %s", _safe_ydl_message(message))
+
+    def error(self, message):
+        log.error("yt-dlp: %s", _safe_ydl_message(message))
+
+
 groq = Groq(api_key=C.GROQ_API_KEY or "missing")
 
 
@@ -60,7 +84,7 @@ def with_retry(fn, tries: int = 6):
 
 
 def ydl_base() -> dict:
-    opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
+    opts = {"quiet": True, "no_warnings": False, "noplaylist": True, "logger": YtDlpLogBridge()}
     if C.COOKIES_FILE and Path(C.COOKIES_FILE).exists():
         opts["cookiefile"] = C.COOKIES_FILE
     if C.JS_RUNTIME:
@@ -72,8 +96,18 @@ def ydl_base() -> dict:
 # video info, audio, transcript (+ cache)
 # --------------------------------------------------------------------------- #
 def get_info(url: str) -> dict:
-    with yt_dlp.YoutubeDL(ydl_base()) as ydl:
-        return ydl.extract_info(url, download=False)
+    log.info("YouTube stage=get_info starting")
+    try:
+        with yt_dlp.YoutubeDL(ydl_base()) as ydl:
+            info = ydl.extract_info(url, download=False)
+        log.info(
+            "YouTube stage=get_info success video_id=%s extractor=%s duration=%s",
+            info.get("id"), info.get("extractor_key"), info.get("duration")
+        )
+        return info
+    except Exception:
+        log.exception("YouTube stage=get_info failed")
+        raise
 
 
 def video_key(info: dict) -> str:
@@ -86,9 +120,16 @@ def download_audio(url: str, workdir: str) -> str:
         "format": "bestaudio/best",
         "outtmpl": os.path.join(workdir, "audio_src.%(ext)s"),
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return ydl.prepare_filename(info)
+    log.info("YouTube stage=download_audio starting")
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            result = ydl.prepare_filename(info)
+        log.info("YouTube stage=download_audio success video_id=%s", info.get("id"))
+        return result
+    except Exception:
+        log.exception("YouTube stage=download_audio failed")
+        raise
 
 
 def split_audio(src: str, workdir: str, chunk_sec: int = 900) -> list[Path]:
@@ -304,8 +345,13 @@ def download_section(url: str, start: float, end: float, workdir: str, base: str
         "download_ranges": yt_dlp.utils.download_range_func(None, [(start, end)]),
         "force_keyframes_at_cuts": True,
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([url])
+    log.info("YouTube stage=download_section starting start=%s end=%s", start, end)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+    except Exception:
+        log.exception("YouTube stage=download_section failed start=%s end=%s", start, end)
+        raise
     files = [
         p
         for p in glob.glob(os.path.join(workdir, base + ".*"))
