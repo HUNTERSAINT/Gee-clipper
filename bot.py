@@ -179,7 +179,7 @@ async def process(update: Update, url: str, opts: core.Opts):
         try:
             await status.edit_text(text)
         except Exception:
-            pass
+            log.exception("Telegram progress message update failed")
 
     try:
         info = await asyncio.to_thread(core.get_info, url)
@@ -221,10 +221,15 @@ async def process(update: Update, url: str, opts: core.Opts):
 
         sent = 0
         for i, clip in enumerate(clips, 1):
-            await step(f"Rendering clip {i}/{len(clips)}...")
+            await step(f"Preparing clip {i}/{len(clips)}...")
             try:
+                loop = asyncio.get_running_loop()
+
+                def clip_progress(label):
+                    asyncio.run_coroutine_threadsafe(step(label), loop)
+
                 res = await asyncio.to_thread(
-                    core.make_clip, url, words, clip, i, workdir, opts
+                    core.make_clip, url, words, clip, i, workdir, opts, clip_progress
                 )
                 with open(res["video"], "rb") as f:
                     thumb = open(res["cover_small"], "rb") if "cover_small" in res else None
