@@ -84,7 +84,16 @@ def with_retry(fn, tries: int = 6):
 
 
 def ydl_base() -> dict:
-    opts = {"quiet": True, "no_warnings": False, "noplaylist": True, "logger": YtDlpLogBridge()}
+    opts = {
+        "quiet": True,
+        "no_warnings": False,
+        "noplaylist": True,
+        "logger": YtDlpLogBridge(),
+        # Avoid the web_embedded client path implicated in recent YouTube
+        # GVS PO-token 403s; let yt-dlp select its remaining default clients.
+        "extractor_args": {"youtube": {"player_client": ["default,-web_embedded"]}},
+        "sleep_interval_requests": 1,
+    }
     if C.COOKIES_FILE and Path(C.COOKIES_FILE).exists():
         opts["cookiefile"] = C.COOKIES_FILE
     if C.JS_RUNTIME:
