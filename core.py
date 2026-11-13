@@ -20,9 +20,9 @@ log = logging.getLogger("clipper.core")
 def _safe_ydl_message(message) -> str:
     """Remove URL query strings and credential-like headers before logging."""
     text = str(message)
-    text = re.sub(r"(https?://[^\\s?]+)\\?[^\\s]+", r"\\1?[query redacted]", text)
-    text = re.sub(r"(?i)(cookie|authorization):\\s*[^\\r\\n]+", r"\\1: [redacted]", text)
-    text = re.sub(r"(?i)(sid|sapisid|token)=([^&\\s]+)", r"\\1=[redacted]", text)
+    text = re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?[query redacted]", text)
+    text = re.sub(r"(?i)(cookie|authorization):\s*[^\r\n]+", r"\1: [redacted]", text)
+    text = re.sub(r"(?i)(sid|sapisid|token)=([^&\s]+)", r"\1=[redacted]", text)
     return text[:1200]
 
 
