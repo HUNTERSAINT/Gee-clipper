@@ -1,0 +1,8 @@
+python-telegram-bot==21.6
+groq>=0.11.0
+yt-dlp[default]
+python-dotenv>=1.0.0
+# OpenCV 5 does not ship the Haar face data files, so stay on 4.x
+opencv-python-headless>=4.9,<5
+Pillow>=10.1
+numpy
