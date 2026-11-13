@@ -93,6 +93,11 @@ def ydl_base() -> dict:
         # GVS PO-token 403s; let yt-dlp select its remaining default clients.
         "extractor_args": {"youtube": {"player_client": ["default", "-web_embedded"]}},
         "sleep_interval_requests": 1,
+        # Bound stalled media requests and avoid effectively endless retries.
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "file_access_retries": 2,
     }
     if C.COOKIES_FILE and Path(C.COOKIES_FILE).exists():
         opts["cookiefile"] = C.COOKIES_FILE
@@ -135,7 +140,8 @@ def download_audio(url: str, workdir: str) -> str:
             info = ydl.extract_info(url, download=True)
             result = ydl.prepare_filename(info)
         log.info("YouTube stage=download_audio success video_id=%s", info.get("id"))
-        return result
+        log.info("Clip %s stage=complete", idx)
+    return result
     except Exception:
         log.exception("YouTube stage=download_audio failed")
         raise
@@ -354,6 +360,20 @@ def download_section(url: str, start: float, end: float, workdir: str, base: str
         "download_ranges": yt_dlp.utils.download_range_func(None, [(start, end)]),
         "force_keyframes_at_cuts": True,
     }
+    last_progress_log = [0.0]
+
+    def report_download(progress):
+        now = time.monotonic()
+        status = progress.get("status")
+        if status in ("finished", "error") or now - last_progress_log[0] >= 10:
+            total = progress.get("total_bytes") or progress.get("total_bytes_estimate")
+            log.info(
+                "YouTube segment download status=%s bytes=%s total=%s eta=%s",
+                status, progress.get("downloaded_bytes"), total, progress.get("eta")
+            )
+            last_progress_log[0] = now
+
+    opts["progress_hooks"] = [report_download]
     log.info("YouTube stage=download_section starting start=%s end=%s", start, end)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -368,11 +388,24 @@ def download_section(url: str, start: float, end: float, workdir: str, base: str
     ]
     if not files:
         raise RuntimeError("Section download produced no file")
+    log.info(
+        "YouTube stage=download_section success file_bytes=%s",
+        os.path.getsize(files[0])
+    )
     return files[0]
 
 
-def make_clip(url: str, words, clip: dict, idx: int, workdir: str, opts: Opts) -> dict:
+def make_clip(
+    url: str, words, clip: dict, idx: int, workdir: str, opts: Opts, progress=None
+) -> dict:
+    def report(stage):
+        if progress:
+            progress(stage)
+
+    report(f"Downloading video segment for clip {idx}...")
     raw = download_section(url, clip["start"], clip["end"], workdir, f"raw_{idx}")
+    report(f"Analysing video framing for clip {idx}...")
+    log.info("Clip %s stage=probe starting", idx)
     meta = V.probe(raw)
     hook_text = clip.get("hook") or clip["title"]
 
@@ -384,15 +417,23 @@ def make_clip(url: str, words, clip: dict, idx: int, workdir: str, opts: Opts) -
             hook=hook_text if opts.hook else None, captions=opts.captions,
         )
 
+    log.info("Clip %s stage=layout starting", idx)
     plan = V.plan_layout(raw, meta, opts.layout)
+    log.info("Clip %s stage=layout success kind=%s", idx, plan["kind"])
     out = os.path.join(workdir, f"clip_{idx}.mp4")
+    report(f"Rendering vertical video for clip {idx}...")
+    log.info("Clip %s stage=render starting", idx)
     V.render(raw, plan, ass_name, out, workdir)
+    log.info("Clip %s stage=render success bytes=%s", idx, os.path.getsize(out))
     if os.path.getsize(out) > C.TG_FILE_LIMIT:
         V.render(raw, plan, ass_name, out, workdir, crf=32)
 
     result = {"video": out, "layout": plan["kind"]}
     try:
+        report(f"Creating thumbnails for clip {idx}...")
+        log.info("Clip %s stage=thumbnails starting", idx)
         result |= V.make_thumbnails(raw, hook_text, workdir, idx)
+        log.info("Clip %s stage=thumbnails success", idx)
     except Exception:
         log.exception("thumbnail generation failed")
     return result
