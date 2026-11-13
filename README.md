@@ -68,9 +68,23 @@ docker build -t gee-clipper .
 docker run --env-file .env gee-clipper
 ```
 
+## YouTube cookies
+
+YouTube often blocks downloads from server IPs. Giving the bot the cookies of a logged-in **throwaway Google account** (never your main one) usually fixes it.
+
+1. Log in to YouTube with the throwaway account in a browser (a private window is best).
+2. Open `https://www.youtube.com/robots.txt` in that same tab, then export the cookies with a browser extension: **Cookie-Editor** (Firefox, including Android) or **Get cookies.txt LOCALLY** (Chrome). Cookie-Editor's JSON export works as is.
+3. Don't log out and don't use YouTube in that browser again. YouTube rotates the cookies, and the exported copy stops working. Close the private window.
+4. Give them to the bot:
+   - **Railway or any host:** add a variable `YT_COOKIES` and paste the exported text as its value
+   - **Your own machine:** save `cookies.txt` next to `bot.py` and set `YT_COOKIES_FILE=cookies.txt`
+5. Redeploy or restart. If downloads start failing again, export fresh cookies.
+
+Cookies are login credentials: never commit them or share them.
+
 ## Limits and troubleshooting
 
-- **YouTube blocks server IPs.** Downloads often work from a home connection but fail from datacenters ("Sign in to confirm you're not a bot"). Export `cookies.txt` from a logged-in browser (use a throwaway account) and set `YT_COOKIES_FILE`. Keep yt-dlp updated: `pip install -U yt-dlp`
+- **YouTube blocks server IPs.** Downloads often work from a home connection but fail from datacenters ("Sign in to confirm you're not a bot"). See "YouTube cookies" above. Keep yt-dlp updated: `pip install -U yt-dlp`
 - **Groq free-tier limits.** Whisper and Llama have per-minute and per-day limits (see console.groq.com/docs/rate-limits). The bot retries automatically and falls back to a smaller model for clip picking. Very long videos use more quota
 - **Telegram's 50 MB upload cap** for bots. Clips are 720p and re-encoded smaller if needed
 - **Face tracking** uses OpenCV's built-in detector. It works best on front-facing talking heads. With several people on screen it follows the largest face

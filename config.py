@@ -1,5 +1,8 @@
 """All settings come from environment variables (see .env.example)."""
+import base64
+import json
 import os
+import tempfile
 
 from dotenv import load_dotenv
 
@@ -12,6 +15,70 @@ def _int(name: str, default: int) -> int:
 
 def _ids(name: str) -> set[int]:
     return {int(x) for x in os.getenv(name, "").replace(" ", "").split(",") if x}
+
+
+def _to_netscape(raw: str) -> str:
+    """Accept Netscape cookies.txt text or a browser-extension JSON export."""
+    if raw.startswith(("[", "{")):  # e.g. Cookie-Editor's JSON export
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            data = data.get("cookies", [])
+        lines = ["# Netscape HTTP Cookie File"]
+        for c in data:
+            domain = c.get("domain", "")
+            if not domain:
+                continue
+            host_only = c.get("hostOnly", not domain.startswith("."))
+            expiry = int(c.get("expirationDate") or c.get("expires") or 0)
+            lines.append(
+                "\t".join(
+                    [
+                        ("#HttpOnly_" if c.get("httpOnly") else "") + domain,
+                        "FALSE" if host_only else "TRUE",
+                        c.get("path", "/"),
+                        "TRUE" if c.get("secure") else "FALSE",
+                        str(expiry),
+                        c.get("name", ""),
+                        str(c.get("value", "")),
+                    ]
+                )
+            )
+        return "\n".join(lines) + "\n"
+
+    # Netscape text. Pasting into a web form can turn tabs into spaces: repair it.
+    out = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#") and not s.startswith("#HttpOnly_"):
+            out.append(s)
+            continue
+        out.append("\t".join(s.split("\t") if "\t" in s else s.split(None, 6)))
+    if not out or not out[0].startswith("# Netscape"):
+        out.insert(0, "# Netscape HTTP Cookie File")
+    return "\n".join(out) + "\n"
+
+
+def _cookies_from_env() -> str:
+    """Write YT_COOKIES (text) or YT_COOKIES_B64 to a temp file; return its path.
+
+    Lets hosts without file uploads (Railway, etc.) use cookies via a variable.
+    Returns "" if nothing is set or the value can't be parsed.
+    """
+    raw = os.getenv("YT_COOKIES", "").strip()
+    b64 = os.getenv("YT_COOKIES_B64", "").strip()
+    try:
+        if not raw and b64:
+            raw = base64.b64decode(b64).decode("utf-8", "replace").strip()
+        if not raw:
+            return ""
+        path = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(_to_netscape(raw))
+        return path
+    except Exception:
+        return ""
 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -31,9 +98,10 @@ SOURCE_HEIGHT = _int("SOURCE_HEIGHT", 720)
 # Videos per user per day (0 = unlimited). Protects your free Groq quota.
 DAILY_LIMIT = _int("DAILY_LIMIT", 10)
 
-COOKIES_FILE = os.getenv("YT_COOKIES_FILE", "")
+# YouTube login cookies: a file path, or the cookies themselves in a variable.
+COOKIES_FILE = os.getenv("YT_COOKIES_FILE", "") or _cookies_from_env()
 # yt-dlp needs a JavaScript runtime for YouTube. Deno is the default;
-# set to "node" if you have Node.js installed instead.
+# set to "node" if you have Node.js instead.
 JS_RUNTIME = os.getenv("YT_JS_RUNTIME", "")
 
 ALLOWED_USERS = _ids("ALLOWED_USERS")  # empty = anyone can use the bot
