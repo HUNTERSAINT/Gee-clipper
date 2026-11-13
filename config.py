@@ -85,8 +85,10 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-large-v3-turbo")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
-LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "llama-3.1-8b-instant")
+# llama-3.3-70b-versatile and llama-3.1-8b-instant were retired for
+# developer-tier Groq accounts. Use currently supported replacements.
+LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "qwen/qwen3.8-27b")
 
 MAX_VIDEO_MINUTES = _int("MAX_VIDEO_MINUTES", 90)
 DEFAULT_CLIPS = _int("DEFAULT_CLIPS", 3)
