@@ -299,6 +299,41 @@ async def logo_upload(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("I couldn't save that logo. Please try uploading it again.")
 
 
+async def music_upload(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update, ctx):
+        await update.message.reply_text("Sorry, this bot is private.")
+        return
+    media = update.message.audio or update.message.document
+    if not media:
+        return
+    if media.file_size and media.file_size > 19 * 1024 * 1024:
+        await update.message.reply_text("Please upload an audio file under 19 MB.")
+        return
+    folder = os.path.join(C.CACHE_DIR, "user-assets")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"music_{update.effective_user.id}.audio")
+    try:
+        remote = await media.get_file()
+        await remote.download_to_drive(custom_path=path)
+        get_opts(ctx).music_path = path
+        await update.message.reply_text("🎵 Custom soundtrack saved. It will be used instead of the built-in music library. Use /clearmusic to return to automatic mood matching.")
+    except Exception:
+        log.exception("custom soundtrack upload failed")
+        await update.message.reply_text("I couldn't save that audio. Please try again.")
+
+
+async def clearmusic_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    o = get_opts(ctx)
+    path = o.music_path
+    o.music_path = ""
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    await update.message.reply_text("Custom soundtrack removed. Automatic mood-matched music is enabled.")
+
+
 async def clearlogo_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     o = get_opts(ctx)
     path = o.logo_path
@@ -666,6 +701,7 @@ async def post_init(app: Application):
             BotCommand("history", "Recent jobs"),
             BotCommand("watermark", "Set or remove text watermark"),
             BotCommand("clearlogo", "Remove uploaded brand logo"),
+            BotCommand("clearmusic", "Remove uploaded soundtrack"),
             BotCommand("captionstyle", "Choose caption theme"),
             BotCommand("translate", "Translate subtitles"),
             BotCommand("outro", "Set a branded end card"),
@@ -714,6 +750,8 @@ def main():
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("watermark", watermark_cmd))
     app.add_handler(CommandHandler("clearlogo", clearlogo_cmd))
+    app.add_handler(CommandHandler("clearmusic", clearmusic_cmd))
+    app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, music_upload))
     app.add_handler(MessageHandler(filters.PHOTO, logo_upload))
     app.add_handler(CommandHandler("captionstyle", captionstyle_cmd))
     app.add_handler(CommandHandler("translate", translate_cmd))
