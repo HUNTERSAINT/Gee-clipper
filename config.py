@@ -85,6 +85,10 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-large-v3")
+# Leave language empty for auto-detection; set to an ISO-639-1 code such as "en" when known.
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "").strip().lower()
+# Optional vocabulary/name hint, in the same language as the audio (Groq limit: 224 tokens).
+WHISPER_PROMPT = os.getenv("WHISPER_PROMPT", "").strip()
 # llama-3.3-70b-versatile and llama-3.1-8b-instant were retired for
 # developer-tier Groq accounts. Use currently supported replacements.
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
