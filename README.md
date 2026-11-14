@@ -166,3 +166,13 @@ The narration replaces the original speech in the finished clip and is mixed wit
 selected background music. Use /voiceover off to preserve the original speaker. Voiceover
 is optional and uses the Edge TTS service plus Groq translation; service availability and
 network access are required.
+
+
+## Premium plans and referral rewards
+
+The bot supports 30-day Premium subscriptions through Paystack checkout and server-side
+verification. Set PAYSTACK_SECRET_KEY and PAYSTACK_PREMIUM_PRICE_KOBO in Railway Variables
+before enabling checkout; the price is deliberately not hard-coded. Users run /upgrade email,
+pay on Paystack, then /verify REFERENCE. Admins can use /grantpremium USER_ID DAYS and
+/revokepremium USER_ID. /invite creates a Telegram deep link; each genuinely new referred
+user adds one daily free job to the inviter, up to 10. /plan shows the current plan.

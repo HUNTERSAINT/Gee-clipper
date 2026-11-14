@@ -60,6 +60,7 @@ HELP = (
     "/queue, /cancel, /history\n"
     "/favorites, /unfavorite ID, /analytics\n"
     "/transcript, /summary, /titles - tools for your last video\n"
+    "/invite, /plan, /upgrade email, /verify reference\n"
     "/watermark YourBrand (or off)\n"
     "/formats all|vertical - 9:16, 1:1 and 16:9 exports\n"
     "/silence on|off - trim long pauses\n"
@@ -110,7 +111,10 @@ def allowed(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
 
 
 def use_quota(uid: int, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
-    return True if uid in C.ADMIN_USERS else S.consume_quota(uid, C.DAILY_LIMIT)
+    if uid in C.ADMIN_USERS or S.is_premium(uid):
+        return True
+    limit = C.DAILY_LIMIT + S.referral_count(uid)
+    return S.consume_quota(uid, limit)
 
 
 def friendly_error(e: Exception) -> str:
@@ -423,6 +427,105 @@ async def unblock_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"User {target} unblocked.")
 
 
+
+
+async def invite_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    me = await ctx.bot.get_me()
+    if not me.username:
+        await update.message.reply_text("The bot username is not configured yet.")
+        return
+    uid = update.effective_user.id
+    count = S.referral_count(uid)
+    link = f"https://t.me/{me.username}?start=ref_{uid}"
+    await update.message.reply_text(
+        "🎁 YOUR INVITE LINK\\n" + link +
+        f"\\nSuccessful invites: {count}/10\\nEach new user who starts through your link adds one extra daily free job, up to 10."
+    )
+
+
+async def plan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    sub = S.subscription(uid)
+    if S.is_premium(uid):
+        await update.message.reply_text(
+            f"⭐ Premium active until {sub['expires_at']} (UTC).\\nUnlimited daily clip jobs."
+        )
+    else:
+        bonus = S.referral_count(uid)
+        await update.message.reply_text(
+            f"🆓 Free plan\\nDaily base quota: {C.DAILY_LIMIT}\\nReferral bonus: +{bonus}/day\\n"
+            "Use /invite to earn extra daily jobs or /upgrade email@example.com for Premium."
+        )
+
+
+async def upgrade_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    email = ctx.args[0].strip() if ctx.args else ""
+    if not email or "@" not in email:
+        await update.message.reply_text("Usage: /upgrade your-email@example.com")
+        return
+    try:
+        import payments
+        checkout = await asyncio.to_thread(payments.initialize, email, update.effective_user.id)
+        S.record_payment(checkout["reference"], update.effective_user.id, checkout["amount"])
+        await update.message.reply_text(
+            "💳 Premium checkout\\n"
+            f"Amount: ₦{checkout['amount'] / 100:,.2f}\\n"
+            f"Pay securely here: {checkout['authorization_url']}\\n\\n"
+            f"After payment, send /verify {checkout['reference']}."
+        , disable_web_page_preview=True)
+    except Exception as exc:
+        await update.message.reply_text(str(exc))
+
+
+async def verify_payment_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reference = ctx.args[0].strip() if ctx.args else ""
+    if not reference:
+        await update.message.reply_text("Usage: /verify PAYSTACK_REFERENCE")
+        return
+    record = S.payment_for_user(reference, update.effective_user.id)
+    if not record:
+        await update.message.reply_text("That payment reference does not belong to your Telegram account.")
+        return
+    try:
+        import payments
+        result = await asyncio.to_thread(payments.verify, reference)
+        metadata = result.get("metadata") or {}
+        owner = int(metadata.get("telegram_user_id", -1)) if isinstance(metadata, dict) else -1
+        if (result.get("status") != "success" or result.get("currency") != "NGN"
+                or int(result.get("amount", 0)) != int(record["amount"]) or owner != update.effective_user.id):
+            await update.message.reply_text("Payment is not verified as a matching successful NGN transaction.")
+            return
+        S.set_payment_status(reference, "success")
+        expiry = S.activate_subscription(update.effective_user.id, 30)
+        await update.message.reply_text(f"⭐ Premium activated. Your plan expires {expiry} (UTC).")
+    except Exception as exc:
+        await update.message.reply_text(f"Verification failed: {exc}")
+
+
+async def grantpremium_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in C.ADMIN_USERS:
+        await update.message.reply_text("Admin only.")
+        return
+    if len(ctx.args) < 1 or not ctx.args[0].isdigit():
+        await update.message.reply_text("Usage: /grantpremium TELEGRAM_USER_ID [DAYS]")
+        return
+    target = int(ctx.args[0])
+    days = int(ctx.args[1]) if len(ctx.args) > 1 and ctx.args[1].isdigit() else 30
+    expiry = S.activate_subscription(target, max(1, min(days, 365)))
+    await update.message.reply_text(f"Premium granted to {target} until {expiry} UTC.")
+
+
+async def revokepremium_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in C.ADMIN_USERS:
+        await update.message.reply_text("Admin only.")
+        return
+    if not ctx.args or not ctx.args[0].isdigit():
+        await update.message.reply_text("Usage: /revokepremium TELEGRAM_USER_ID")
+        return
+    S.revoke_subscription(int(ctx.args[0]))
+    await update.message.reply_text("Premium subscription revoked.")
+
+
 async def transcript_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     key = ctx.user_data.get("last_transcript_key")
     if not key:
@@ -549,6 +652,15 @@ async def favorite_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # handlers
 # --------------------------------------------------------------------------- #
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    is_new = S.record_user(uid)
+    if is_new and ctx.args and ctx.args[0].startswith("ref_"):
+        try:
+            referrer = int(ctx.args[0][4:])
+            if S.record_referral(referrer, uid):
+                await update.message.reply_text("🎉 Referral accepted. Your inviter earned one extra daily job.")
+        except ValueError:
+            pass
     await update.message.reply_text(HELP, reply_markup=settings_keyboard(get_opts(ctx)))
 
 
@@ -831,6 +943,10 @@ async def post_init(app: Application):
             BotCommand("transcript", "Download last transcript"),
             BotCommand("summary", "AI summary and chapters"),
             BotCommand("titles", "Generate title ideas"),
+            BotCommand("invite", "Invite friends and earn quota"),
+            BotCommand("plan", "View your plan"),
+            BotCommand("upgrade", "Buy Premium"),
+            BotCommand("verify", "Verify a Premium payment"),
             BotCommand("watermark", "Set or remove text watermark"),
             BotCommand("clearlogo", "Remove uploaded brand logo"),
             BotCommand("clearmusic", "Remove uploaded soundtrack"),
@@ -890,6 +1006,12 @@ def main():
     app.add_handler(CommandHandler("transcript", transcript_cmd))
     app.add_handler(CommandHandler("summary", summary_cmd))
     app.add_handler(CommandHandler("titles", titles_cmd))
+    app.add_handler(CommandHandler("invite", invite_cmd))
+    app.add_handler(CommandHandler("plan", plan_cmd))
+    app.add_handler(CommandHandler("upgrade", upgrade_cmd))
+    app.add_handler(CommandHandler("verify", verify_payment_cmd))
+    app.add_handler(CommandHandler("grantpremium", grantpremium_cmd))
+    app.add_handler(CommandHandler("revokepremium", revokepremium_cmd))
     app.add_handler(CallbackQueryHandler(favorite_callback, pattern=r"^fav:"))
     app.add_handler(CommandHandler("watermark", watermark_cmd))
     app.add_handler(CommandHandler("clearlogo", clearlogo_cmd))

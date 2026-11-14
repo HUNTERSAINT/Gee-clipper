@@ -26,6 +26,9 @@ def init():
         CREATE TABLE IF NOT EXISTS jobs(job_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, title TEXT NOT NULL DEFAULT 'Processing', url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'processing', clips INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, finished_at TEXT);
         CREATE TABLE IF NOT EXISTS clips(clip_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, user_id INTEGER NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL, start REAL NOT NULL, end REAL NOT NULL, score REAL NOT NULL DEFAULT 0, hook TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', hashtags TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS favorites(user_id INTEGER NOT NULL, clip_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(user_id,clip_id), FOREIGN KEY(clip_id) REFERENCES clips(clip_id) ON DELETE CASCADE);
+        CREATE TABLE IF NOT EXISTS referrals(referrer_id INTEGER NOT NULL, referred_id INTEGER NOT NULL UNIQUE, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS subscriptions(user_id INTEGER PRIMARY KEY, plan TEXT NOT NULL, expires_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS payments(reference TEXT PRIMARY KEY, user_id INTEGER NOT NULL, amount INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs(user_id,created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_clips_user_created ON clips(user_id,created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_favorites_user_created ON favorites(user_id,created_at DESC);
@@ -39,8 +42,10 @@ def _now():
 def record_user(user_id):
     now = _now()
     with _connect() as db:
+        exists = db.execute("SELECT 1 FROM users WHERE user_id=?", (int(user_id),)).fetchone()
         db.execute("""INSERT INTO users VALUES(?,?,?) ON CONFLICT(user_id)
                       DO UPDATE SET last_seen=excluded.last_seen""", (int(user_id), now, now))
+    return exists is None
 
 
 def is_blocked(user_id):
@@ -161,3 +166,81 @@ def global_analytics():
             "active_jobs":db.execute("SELECT COUNT(*) n FROM jobs WHERE status IN ('processing','queued')").fetchone()["n"],
             "blocked":db.execute("SELECT COUNT(*) n FROM blocked_users").fetchone()["n"],
         }
+
+
+
+def record_referral(referrer_id, referred_id):
+    if int(referrer_id) == int(referred_id):
+        return False
+    with _connect() as db:
+        cur = db.execute("INSERT OR IGNORE INTO referrals VALUES(?,?,?)",
+                         (int(referrer_id), int(referred_id), _now()))
+        return cur.rowcount > 0
+
+
+def referral_count(user_id):
+    with _connect() as db:
+        return min(10, db.execute(
+            "SELECT COUNT(*) n FROM referrals WHERE referrer_id=?", (int(user_id),)
+        ).fetchone()["n"])
+
+
+def record_payment(reference, user_id, amount):
+    with _connect() as db:
+        db.execute("INSERT OR IGNORE INTO payments VALUES(?,?,?,'pending',?)",
+                   (str(reference), int(user_id), int(amount), _now()))
+
+
+def payment_for_user(reference, user_id):
+    with _connect() as db:
+        row = db.execute("SELECT * FROM payments WHERE reference=? AND user_id=?",
+                         (str(reference), int(user_id))).fetchone()
+    return dict(row) if row else None
+
+
+def set_payment_status(reference, status):
+    with _connect() as db:
+        db.execute("UPDATE payments SET status=? WHERE reference=?",
+                   (str(status)[:24], str(reference)))
+
+
+def activate_subscription(user_id, days=30):
+    now = datetime.now(timezone.utc)
+    with _connect() as db:
+        row = db.execute("SELECT expires_at FROM subscriptions WHERE user_id=?",
+                         (int(user_id),)).fetchone()
+        base = now
+        if row:
+            try:
+                old = datetime.fromisoformat(row["expires_at"])
+                if old > now:
+                    base = old
+            except ValueError:
+                pass
+        expires = (base + __import__("datetime").timedelta(days=int(days))).isoformat(timespec="seconds")
+        db.execute("""INSERT INTO subscriptions VALUES(?,?,?,?)
+                      ON CONFLICT(user_id) DO UPDATE SET plan=excluded.plan,
+                      expires_at=excluded.expires_at, updated_at=excluded.updated_at""",
+                   (int(user_id), "premium", expires, _now()))
+    return expires
+
+
+def subscription(user_id):
+    with _connect() as db:
+        row = db.execute("SELECT * FROM subscriptions WHERE user_id=?", (int(user_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def is_premium(user_id):
+    sub = subscription(user_id)
+    if not sub or sub["plan"] != "premium":
+        return False
+    try:
+        return datetime.fromisoformat(sub["expires_at"]) > datetime.now(timezone.utc)
+    except ValueError:
+        return False
+
+
+def revoke_subscription(user_id):
+    with _connect() as db:
+        db.execute("DELETE FROM subscriptions WHERE user_id=?", (int(user_id),))
