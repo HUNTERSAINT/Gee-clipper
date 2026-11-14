@@ -81,11 +81,14 @@ def summary(o: core.Opts) -> str:
         f"Colour grade: {'on' if o.grade else 'off'}"
         + f"\nCaption theme: {o.caption_style}"
         + f"\nWatermark: {o.watermark or 'off'}"
+        + f"\nExports: {o.export_formats}"
+        + f"\nSilence removal: {'on' if o.remove_silence else 'off'}"
     )
 
 
-def allowed(update: Update) -> bool:
-    return not C.ALLOWED_USERS or update.effective_user.id in C.ALLOWED_USERS
+def allowed(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    blocked = ctx.application.bot_data.setdefault("blocked_users", set())
+    return update.effective_user.id not in blocked and (not C.ALLOWED_USERS or update.effective_user.id in C.ALLOWED_USERS)
 
 
 def use_quota(uid: int, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -157,6 +160,8 @@ def settings_keyboard(o: core.Opts):
          InlineKeyboardButton("Classic", callback_data="style:classic"),
          InlineKeyboardButton("Neon", callback_data="style:neon"),
          InlineKeyboardButton("Minimal", callback_data="style:minimal")],
+        [InlineKeyboardButton(f"Exports: {o.export_formats}", callback_data="formats:toggle"),
+         InlineKeyboardButton(f"Silence trim {'ON' if o.remove_silence else 'OFF'}", callback_data="silence:toggle")],
     ])
 
 
@@ -179,6 +184,10 @@ async def settings_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         o.clips = max(1, min(int(value), C.MAX_CLIPS))
     elif action == "style" and value in ("bold", "classic", "neon", "minimal"):
         o.caption_style = value
+    elif action == "formats" and value == "toggle":
+        o.export_formats = "vertical" if o.export_formats == "all" else "all"
+    elif action == "silence" and value == "toggle":
+        o.remove_silence = not o.remove_silence
     await q.edit_message_text("⚙️ Gee Clipper controls\n\n" + summary(o),
                               reply_markup=settings_keyboard(o))
 
@@ -239,6 +248,72 @@ async def watermark_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Watermark: {o.watermark or 'off'}")
 
 
+async def formats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    value = ctx.args[0].lower() if ctx.args else ""
+    if value not in ("all", "vertical"):
+        await update.message.reply_text("Usage: /formats all or /formats vertical\\nall creates 9:16, 1:1 and 16:9 versions.")
+        return
+    o = get_opts(ctx)
+    o.export_formats = value
+    await update.message.reply_text(f"Export formats set to {value}.", reply_markup=settings_keyboard(o))
+
+
+async def silence_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    value = ctx.args[0].lower() if ctx.args else ""
+    if value not in ("on", "off"):
+        await update.message.reply_text("Usage: /silence on or /silence off")
+        return
+    o = get_opts(ctx)
+    o.remove_silence = value == "on"
+    await update.message.reply_text(f"Silence removal {value}.", reply_markup=settings_keyboard(o))
+
+
+async def stats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in C.ADMIN_USERS:
+        await update.message.reply_text("Admin only.")
+        return
+    data = ctx.application.bot_data
+    usage = data.get("daily_usage", {})
+    today = date.today().isoformat()
+    today_count = sum(n for day, n in usage.values() if day == today)
+    users = data.get("total_users", set())
+    await update.message.reply_text(
+        "📊 Gee Clipper admin dashboard\\n"
+        f"Total jobs: {data.get('total_jobs', 0)}\\n"
+        f"Unique users seen: {len(users)}\\n"
+        f"Today's accepted jobs: {today_count}\\n"
+        f"Active jobs: {sum(1 for j in JOB_STATES.values() if j.get('status') == 'processing')}\\n"
+        f"Queued jobs: {sum(1 for j in JOB_STATES.values() if j.get('status') == 'queued')}\\n"
+        f"Blocked users: {len(data.get('blocked_users', set()))}"
+    )
+
+
+async def block_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in C.ADMIN_USERS:
+        await update.message.reply_text("Admin only.")
+        return
+    try:
+        target = int(ctx.args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /block TELEGRAM_USER_ID")
+        return
+    ctx.application.bot_data.setdefault("blocked_users", set()).add(target)
+    await update.message.reply_text(f"User {target} blocked.")
+
+
+async def unblock_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in C.ADMIN_USERS:
+        await update.message.reply_text("Admin only.")
+        return
+    try:
+        target = int(ctx.args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /unblock TELEGRAM_USER_ID")
+        return
+    ctx.application.bot_data.setdefault("blocked_users", set()).discard(target)
+    await update.message.reply_text(f"User {target} unblocked.")
+
+
 async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     history = ctx.user_data.get("history", [])
     if not history:
@@ -285,7 +360,7 @@ async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     global WAITING
-    if not allowed(update):
+    if not allowed(update, ctx):
         await update.message.reply_text("Sorry, this bot is private.")
         return
     text = update.message.text or ""
@@ -293,22 +368,27 @@ async def handle_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not m:
         await update.message.reply_text("Send me a video link.\n\n" + HELP)
         return
-    url = m.group(1)
+    urls = [u.rstrip(".,)") for u in URL_RE.findall(text)][:3]
+    url = urls[0]
     opts = core.Opts(**vars(get_opts(ctx)))
     tail = text.replace(url, "").strip()
     if tail.isdigit():
         opts.clips = max(1, min(int(tail), C.MAX_CLIPS))
 
-    if not use_quota(update.effective_user.id, ctx):
-        await update.message.reply_text(
-            f"Daily limit reached ({C.DAILY_LIMIT} videos). Try again tomorrow."
-        )
-        return
-
     uid = update.effective_user.id
+    allowed_urls = []
+    for candidate in urls:
+        if not use_quota(uid, ctx):
+            break
+        allowed_urls.append(candidate)
+    if not allowed_urls:
+        await update.message.reply_text(f"Daily limit reached ({C.DAILY_LIMIT} videos). Try again tomorrow.")
+        return
+    if len(allowed_urls) < len(urls):
+        await update.message.reply_text(f"Daily limit reached; processing {len(allowed_urls)} of {len(urls)} submitted links.")
     event = asyncio.Event()
     CANCEL_FLAGS[uid] = event
-    JOB_STATES[uid] = {"status": "queued", "url": url}
+    JOB_STATES[uid] = {"status": "queued", "url": allowed_urls}
     if JOB_LOCK.locked():
         await update.message.reply_text(f"Queued. {WAITING + 1} ahead. Use /queue or /cancel.")
     WAITING += 1
@@ -318,7 +398,11 @@ async def handle_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Job cancelled before processing.")
                 return
             JOB_STATES[uid]["status"] = "processing"
-            await process(update, url, opts, ctx)
+            for index, candidate in enumerate(allowed_urls, 1):
+                if event.is_set():
+                    break
+                JOB_STATES[uid]["current"] = index
+                await process(update, candidate, opts, ctx)
     finally:
         WAITING -= 1
         JOB_STATES.pop(uid, None)
@@ -327,6 +411,9 @@ async def handle_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    stats = ctx.application.bot_data
+    stats["total_jobs"] = int(stats.get("total_jobs", 0)) + 1
+    stats["total_users"] = set(stats.get("total_users", [])) | {update.effective_user.id}
     status = await msg.reply_text("Checking video...")
     workdir = tempfile.mkdtemp(prefix="clipper_")
 
@@ -407,6 +494,21 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                         if thumb:
                             thumb.close()
                 sent += 1
+                if res.get("vtt"):
+                    try:
+                        with open(res["vtt"], "rb") as vtt_file:
+                            await msg.reply_document(vtt_file, filename=f"gee-clipper-{i}.vtt", caption="📝 WebVTT subtitles")
+                    except Exception:
+                        log.exception("WebVTT file send failed")
+                for fmt, variant_path in (res.get("variants") or {}).items():
+                    try:
+                        if os.path.getsize(variant_path) <= C.TG_FILE_LIMIT:
+                            with open(variant_path, "rb") as variant_file:
+                                await msg.reply_video(variant_file, caption=f"📐 {fmt.title()} export", supports_streaming=True, read_timeout=180, write_timeout=180)
+                        else:
+                            await msg.reply_text(f"{fmt.title()} export is too large for Telegram's upload limit; the vertical clip was sent.")
+                    except Exception:
+                        log.exception("social aspect-ratio export failed format=%s", fmt)
                 if res.get("subtitles"):
                     try:
                         with open(res["subtitles"], "rb") as subtitle_file:
@@ -475,6 +577,11 @@ async def post_init(app: Application):
             BotCommand("history", "Recent jobs"),
             BotCommand("watermark", "Set or remove text watermark"),
             BotCommand("captionstyle", "Choose caption theme"),
+            BotCommand("formats", "Choose video aspect-ratio exports"),
+            BotCommand("silence", "Toggle silence removal"),
+            BotCommand("stats", "Admin usage dashboard"),
+            BotCommand("block", "Block a Telegram user"),
+            BotCommand("unblock", "Unblock a Telegram user"),
         ]
     )
 
@@ -507,7 +614,7 @@ def main():
         .build()
     )
     app.add_handler(CommandHandler(["start", "help"], start))
-    app.add_handler(CallbackQueryHandler(settings_callback, pattern=r"^(toggle|layout|clips|style):"))
+    app.add_handler(CallbackQueryHandler(settings_callback, pattern=r"^(toggle|layout|clips|style|formats|silence):"))
     app.add_handler(CommandHandler("panel", panel_cmd))
     app.add_handler(CommandHandler("preset", preset_cmd))
     app.add_handler(CommandHandler("queue", queue_cmd))
@@ -515,6 +622,11 @@ def main():
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("watermark", watermark_cmd))
     app.add_handler(CommandHandler("captionstyle", captionstyle_cmd))
+    app.add_handler(CommandHandler("formats", formats_cmd))
+    app.add_handler(CommandHandler("silence", silence_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("block", block_cmd))
+    app.add_handler(CommandHandler("unblock", unblock_cmd))
     app.add_handler(
         CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade"], settings_cmd)
     )
