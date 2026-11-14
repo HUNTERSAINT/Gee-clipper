@@ -458,6 +458,57 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
     run(cmd, cwd=workdir)
 
 
+def append_outro(source: str, workdir: str, idx: int, text: str = "Follow for more") -> str:
+    """Append a short branded end card while preserving source audio and adding a silent tail."""
+    card = os.path.join(workdir, f"outro_{idx}.png")
+    output = os.path.join(workdir, f"clip_{idx}_outro.mp4")
+    image = Image.new("RGB", (OUT_W, OUT_H), (8, 28, 34))
+    draw = ImageDraw.Draw(image)
+    for y in range(OUT_H):
+        blend = y / max(1, OUT_H - 1)
+        color = (int(7 + 8 * blend), int(35 + 30 * blend), int(42 + 38 * blend))
+        draw.line((0, y, OUT_W, y), fill=color)
+    draw.rounded_rectangle((48, 420, OUT_W - 48, 860), radius=36, outline=(40, 190, 175), width=4)
+    font, lines, stroke, line_h = _fit(draw, _clean(text)[:80], OUT_W - 120, 260, max_lines=3, start=76, stop=38)
+    y0 = (OUT_H - line_h * len(lines)) // 2
+    _draw_lines(draw, lines, font, stroke, line_h, 60, y0, OUT_W - 120, True)
+    small = _font(22)
+    brand = "MADE WITH GEE CLIPPER"
+    bw = draw.textlength(brand, font=small)
+    draw.text(((OUT_W - bw) / 2, 910), brand, font=small, fill=(160, 205, 205))
+    image.save(card)
+    probe_audio = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+         "stream=codec_type", "-of", "csv=p=0", source],
+        capture_output=True, text=True,
+    )
+    has_audio = probe_audio.returncode == 0 and bool(probe_audio.stdout.strip())
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", source,
+           "-loop", "1", "-framerate", "30", "-t", "1.8", "-i", card]
+    if has_audio:
+        cmd += ["-f", "lavfi", "-t", "1.8", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+        graph = (
+            "[0:v]fps=30,format=yuv420p,setpts=PTS-STARTPTS[v0];"
+            "[0:a]aresample=48000,asetpts=PTS-STARTPTS[a0];"
+            "[1:v]fps=30,format=yuv420p,setpts=PTS-STARTPTS[v1];"
+            "[2:a]aresample=48000,asetpts=PTS-STARTPTS[a1];"
+            "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
+        )
+        maps = ["-map", "[v]", "-map", "[a]"]
+    else:
+        graph = (
+            "[0:v]fps=30,format=yuv420p,setpts=PTS-STARTPTS[v0];"
+            "[1:v]fps=30,format=yuv420p,setpts=PTS-STARTPTS[v1];"
+            "[v0][v1]concat=n=2:v=1:a=0[v]"
+        )
+        maps = ["-map", "[v]"]
+    run(cmd + ["-filter_complex", graph, *maps, "-c:v", "libx264",
+               "-preset", "veryfast", "-crf", "25", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", output],
+        cwd=workdir)
+    return output
+
+
 # --------------------------------------------------------------------------- #
 # thumbnails: best frame + hook text (16:9 and 9:16 cover)
 # --------------------------------------------------------------------------- #
