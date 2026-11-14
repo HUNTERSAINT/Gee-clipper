@@ -422,7 +422,12 @@ def make_clip(
     out = os.path.join(workdir, f"clip_{idx}.mp4")
     report(f"Rendering vertical video for clip {idx}...")
     log.info("Clip %s stage=render starting", idx)
-    V.render(raw, plan, ass_name, out, workdir)
+    spoken_text = " ".join(
+        str(w.get("word", "")) for w in words
+        if w.get("start", 0) >= clip["start"] and w.get("end", 0) <= clip["end"]
+    )
+    mood_text = " ".join((clip.get("title", ""), clip.get("description", ""), spoken_text))
+    V.render(raw, plan, ass_name, out, workdir, mood_text=mood_text)
     log.info("Clip %s stage=render success bytes=%s", idx, os.path.getsize(out))
     if os.path.getsize(out) > C.TG_FILE_LIMIT:
         V.render(raw, plan, ass_name, out, workdir, crf=32)
