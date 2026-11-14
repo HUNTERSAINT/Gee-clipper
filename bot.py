@@ -63,7 +63,13 @@ HELP = (
 
 
 def get_opts(ctx: ContextTypes.DEFAULT_TYPE) -> core.Opts:
-    return ctx.user_data.setdefault("opts", core.Opts())
+    o = ctx.user_data.setdefault("opts", core.Opts())
+    defaults = core.Opts()
+    # Migrate settings saved by older bot versions when new options are added.
+    for key, value in vars(defaults).items():
+        if not hasattr(o, key):
+            setattr(o, key, value)
+    return o
 
 
 def summary(o: core.Opts) -> str:
