@@ -7,6 +7,7 @@ import re
 import statistics
 import subprocess
 import textwrap
+import wave
 
 import cv2
 import numpy as np
@@ -237,26 +238,69 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
 # --------------------------------------------------------------------------- #
 # render the 9:16 clip
 # --------------------------------------------------------------------------- #
+def create_ambient_bed(path: str, duration: float, sample_rate: int = 44100) -> None:
+    """Create a quiet, original ambient chord bed; no external/copyrighted audio."""
+    duration = max(1.0, float(duration))
+    total = int(duration * sample_rate)
+    # A gentle four-chord progression with soft harmonics and slow breathing.
+    progression = [
+        (130.81, 164.81, 196.00, 261.63),  # C
+        (110.00, 130.81, 164.81, 220.00),  # Am
+        (87.31, 130.81, 174.61, 220.00),   # F
+        (98.00, 146.83, 196.00, 246.94),   # G
+    ]
+    chunk = 5 * sample_rate
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        for offset in range(0, total, chunk):
+            count = min(chunk, total - offset)
+            t = (np.arange(offset, offset + count, dtype=np.float64) / sample_rate)
+            chord_index = (t / 8.0).astype(int) % len(progression)
+            signal = np.zeros(count, dtype=np.float64)
+            for ci, chord in enumerate(progression):
+                mask = chord_index == ci
+                if not np.any(mask):
+                    continue
+                local_t = t[mask]
+                pad = np.zeros(local_t.size, dtype=np.float64)
+                for note in chord:
+                    pad += (
+                        np.sin(2 * np.pi * note * local_t)
+                        + 0.22 * np.sin(2 * np.pi * note * 2 * local_t)
+                    ) / len(chord)
+                signal[mask] = pad
+            # Slow level movement, with clean fade-in and fade-out.
+            breathe = 0.78 + 0.12 * np.sin(2 * np.pi * t / 11.0)
+            fade_in = np.clip(t / 1.8, 0.0, 1.0)
+            fade_out = np.clip((duration - t) / 2.0, 0.0, 1.0)
+            signal *= 0.16 * breathe * fade_in * fade_out
+            pcm = np.clip(signal * 32767, -32768, 32767).astype("<i2")
+            wav.writeframes(pcm.tobytes())
+
+
 def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
            crf: int = 24) -> None:
     ass = f",ass={ass_name}" if ass_name else ""
+    grade = ",eq=contrast=1.05:saturation=1.08:brightness=0.005:gamma=1.02"
     kind = plan["kind"]
     if kind == "crop":
         vf = (
             f"crop=w={plan['cw']}:h=ih:x='{x_expr(plan['keys'])}':y=0,"
-            f"scale={OUT_W}:{OUT_H},setsar=1{ass}"
+            f"scale={OUT_W}:{OUT_H},setsar=1{grade}{ass}"
         )
         vargs = ["-vf", vf]
     elif kind == "center":
         vf = (
             "crop=w='trunc(ih*9/16/2)*2':h=ih,"
-            f"scale={OUT_W}:{OUT_H},setsar=1{ass}"
+            f"scale={OUT_W}:{OUT_H},setsar=1{grade}{ass}"
         )
         vargs = ["-vf", vf]
     elif kind == "fill":
         vf = (
             f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
-            f"crop={OUT_W}:{OUT_H},setsar=1{ass}"
+            f"crop={OUT_W}:{OUT_H},setsar=1{grade}{ass}"
         )
         vargs = ["-vf", vf]
     else:  # blur: sharp video centred over a blurred, darkened copy of itself
@@ -265,13 +309,40 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
             f"[a]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
             f"crop={OUT_W}:{OUT_H},boxblur=25:6,eq=brightness=-0.12[bg];"
             f"[b]scale={OUT_W}:-2[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1{ass}[v]"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1{grade}{ass}[v]"
         )
-        vargs = ["-filter_complex", fc, "-map", "[v]", "-map", "0:a?"]
+        vargs = ["-filter_complex", fc, "-map", "[v]"]
+
+    # The original speech/music stays at normal level; the generated bed is
+    # mixed quietly underneath it. If the source has no audio, use the bed alone.
+    audio_probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", raw],
+        capture_output=True, text=True,
+    )
+    has_audio = audio_probe.returncode == 0 and bool(audio_probe.stdout.strip())
+    bed = os.path.join(workdir, "ambient_bed.wav")
+    duration = probe(raw)["dur"]
+    create_ambient_bed(bed, duration)
+
+    if has_audio:
+        audio_filter = (
+            "[0:a:0]volume=1.0[original];"
+            "[1:a:0]volume=0.10[background];"
+            "[original][background]amix=inputs=2:duration=first:"
+            "dropout_transition=2,alimiter=limit=0.95[aout]"
+        )
+    else:
+        audio_filter = "[1:a:0]volume=0.10[aout]"
+
+    if kind == "blur":
+        vargs[1] += ";" + audio_filter
+    else:
+        vargs = ["-vf", vf, "-filter_complex", audio_filter, "-map", "0:v:0"]
     run(
         [
-            "ffmpeg", "-y", "-loglevel", "error", "-i", raw, *vargs,
-            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+            "ffmpeg", "-y", "-loglevel", "error", "-i", raw, "-i", bed,
+            *vargs, "-map", "[aout]",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart", out,
