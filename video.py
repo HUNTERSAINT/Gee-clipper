@@ -216,6 +216,63 @@ def build_srt(words, clip_start: float, clip_end: float, path: str):
         handle.write("\n\n".join(blocks) + ("\n" if blocks else ""))
 
 
+def build_vtt(words, clip_start: float, clip_end: float, path: str):
+    """Write WebVTT captions with clip-relative timestamps."""
+    selected = [w for w in words if w["start"] >= clip_start - 0.05 and w["end"] <= clip_end + 0.3]
+    groups, current = [], []
+    for word in selected:
+        if current and (len(current) >= 8 or word["start"] - current[0]["start"] >= 4.0):
+            groups.append(current)
+            current = []
+        current.append(word)
+        if word["word"].rstrip().endswith((".", "?", "!")):
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    def stamp(seconds):
+        ms = max(0, int(round(seconds * 1000)))
+        hh, ms = divmod(ms, 3600000)
+        mm, ms = divmod(ms, 60000)
+        ss, ms = divmod(ms, 1000)
+        return f"{hh:02d}:{mm:02d}:{ss:02d}.{ms:03d}"
+    blocks = ["WEBVTT"]
+    for group in groups:
+        start = max(0.0, group[0]["start"] - clip_start)
+        end = max(start + 0.12, group[-1]["end"] - clip_start)
+        caption = " ".join(w["word"].strip() for w in group).strip()
+        blocks.append(f"{stamp(start)} --> {stamp(end)}\\n{caption}")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\\n\\n".join(blocks) + "\\n")
+
+
+def render_social_variants(source: str, workdir: str, idx: int, formats=("square", "landscape")) -> dict:
+    """Create 1:1 and 16:9 versions with blurred fill and the finished vertical clip centered."""
+    outputs = {}
+    dimensions = {"square": (1080, 1080), "landscape": (1280, 720)}
+    for fmt in formats:
+        if fmt not in dimensions:
+            continue
+        width, height = dimensions[fmt]
+        target = os.path.join(workdir, f"clip_{idx}_{fmt}.mp4")
+        graph = (
+            f"[0:v]split=2[bg][fg];"
+            f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},boxblur=28:8[back];"
+            f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[front];"
+            f"[back][front]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
+        )
+        run([
+            "ffmpeg", "-y", "-loglevel", "error", "-i", source,
+            "-filter_complex", graph, "-map", "[v]", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k",
+            "-movflags", "+faststart", target,
+        ])
+        outputs[fmt] = target
+    return outputs
+
+
 def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
               captions=True, watermark=None, caption_style="bold"):
     header = (
