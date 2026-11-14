@@ -16,6 +16,7 @@ A Telegram bot that turns a YouTube link into short vertical clips ready for Tik
 - **Platform caption packs** for TikTok, Instagram Reels and YouTube Shorts
 - **Downloadable SRT subtitles** for each finished clip
 - **Optional text watermark** that can be set per user
+- **Four karaoke caption themes:** Bold, Classic, Neon and Minimal
 
 ## How it works
 
@@ -60,6 +61,7 @@ Send a YouTube link. Add a number to choose how many clips: `https://youtu.be/xx
 | `/panel` | Button-based settings panel |
 | `/preset viral\|podcast\|educational\|cinematic\|clean` | Apply a ready-made editing preset |
 | `/watermark YourBrand` | Add a text watermark; use `/watermark off` to remove it |
+| `/captionstyle bold\|classic\|neon\|minimal` | Choose a caption theme |
 | `/queue` | Check your current queue status |
 | `/cancel` | Request cancellation of your current job |
 | `/history` | Show your last 10 jobs |
