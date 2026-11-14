@@ -52,7 +52,11 @@ HELP = (
     "/hook on|off - title banner at the start\n"
     "/music on|off - background music matched to each clip\n"
     "/grade on|off - automatic colour grading\n"
-    "/settings - show current settings\n\n"
+    "/settings - show current settings\n"
+    "/panel - button-based settings\n"
+    "/preset viral|podcast|educational|cinematic|clean\n"
+    "/queue, /cancel, /history\n"
+    "/watermark YourBrand (or off)\n\n"
     f"Videos up to {C.MAX_VIDEO_MINUTES} min. Send the same link again and "
     "it's instant (the transcript is cached)."
 )
@@ -77,16 +81,17 @@ def allowed(update: Update) -> bool:
     return not C.ALLOWED_USERS or update.effective_user.id in C.ALLOWED_USERS
 
 
-def use_quota(uid: int) -> bool:
+def use_quota(uid: int, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
     if uid in C.ADMIN_USERS or C.DAILY_LIMIT <= 0:
         return True
+    usage = ctx.application.bot_data.setdefault("daily_usage", {})
     today = date.today().isoformat()
-    day, n = USAGE.get(uid, (today, 0))
+    day, n = usage.get(str(uid), (today, 0))
     if day != today:
         n = 0
     if n >= C.DAILY_LIMIT:
         return False
-    USAGE[uid] = (today, n + 1)
+    usage[str(uid)] = (today, n + 1)
     return True
 
 
@@ -226,7 +231,7 @@ async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # handlers
 # --------------------------------------------------------------------------- #
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP)
+    await update.message.reply_text(HELP, reply_markup=settings_keyboard(get_opts(ctx)))
 
 
 async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -271,7 +276,7 @@ async def handle_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if tail.isdigit():
         opts.clips = max(1, min(int(tail), C.MAX_CLIPS))
 
-    if not use_quota(update.effective_user.id):
+    if not use_quota(update.effective_user.id, ctx):
         await update.message.reply_text(
             f"Daily limit reached ({C.DAILY_LIMIT} videos). Try again tomorrow."
         )
