@@ -714,8 +714,22 @@ def main():
         CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade"], settings_cmd)
     )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
-    log.info("Bot running")
-    app.run_polling()
+    webhook_base = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")
+    if webhook_base:
+        webhook_path = os.getenv("WEBHOOK_PATH", "").strip().strip("/")
+        if not webhook_path:
+            sys.exit("WEBHOOK_PATH must be set when WEBHOOK_URL is configured")
+        port = int(os.getenv("PORT", os.getenv("WEBHOOK_PORT", "8080")))
+        secret = os.getenv("WEBHOOK_SECRET", "").strip() or None
+        log.info("Bot starting in webhook mode port=%s path_configured=%s", port, bool(webhook_path))
+        app.run_webhook(
+            listen="0.0.0.0", port=port, url_path=webhook_path,
+            webhook_url=f"{webhook_base}/{webhook_path}", secret_token=secret,
+            allowed_updates=Update.ALL_TYPES,
+        )
+    else:
+        log.info("Bot running in polling mode")
+        app.run_polling()
 
 
 if __name__ == "__main__":
