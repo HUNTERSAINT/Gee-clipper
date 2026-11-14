@@ -386,7 +386,7 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
 # render the 9:16 clip
 # --------------------------------------------------------------------------- #
 def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
-           crf: int = 24, grade_vf: str | None = None, music=None) -> None:
+           crf: int = 24, grade_vf: str | None = None, music=None, logo_path: str | None = None) -> None:
     grade = ("," + grade_vf) if grade_vf else ""
     ass = f",ass={ass_name}" if ass_name else ""
     kind = plan["kind"]
@@ -418,6 +418,24 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
             f"{ass}[vout]"
         )
 
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
+    if music:
+        import music as M
+        music_path, music_slug, mfeat = music
+        cmd += ["-stream_loop", "-1", "-i", music_path]
+        log.info("Clip soundtrack track=%s", music_slug)
+    logo_input = None
+    if logo_path and os.path.isfile(logo_path):
+        logo_input = 2 if music else 1
+        cmd += ["-i", logo_path]
+        video_graph += (
+            f";[{logo_input}:v]scale=150:-1,format=rgba[brandlogo];"
+            "[vout][brandlogo]overlay=W-w-24:H-h-24[vbranded]"
+        )
+        video_label = "[vbranded]"
+    else:
+        video_label = "[vout]"
+
     audio_probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
          "-show_entries", "stream=codec_type", "-of", "csv=p=0", raw],
@@ -425,17 +443,13 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
     )
     has_audio = audio_probe.returncode == 0 and bool(audio_probe.stdout.strip())
     dur = probe(raw)["dur"]
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
     if music:
-        import music as M
-        music_path, music_slug, mfeat = music
-        cmd += ["-stream_loop", "-1", "-i", music_path]
         graph = video_graph + ";" + M.mix_filter(has_audio, mfeat, dur)
-        maps = ["-map", "[vout]", "-map", "[aout]", "-t", f"{dur:.2f}"]
+        maps = ["-map", video_label, "-map", "[aout]", "-t", f"{dur:.2f}"]
         log.info("Clip soundtrack track=%s voice_present=%s", music_slug, has_audio)
     else:
         graph = video_graph
-        maps = ["-map", "[vout]"] + (["-map", "0:a:0"] if has_audio else [])
+        maps = ["-map", video_label] + (["-map", "0:a:0"] if has_audio else [])
     cmd += ["-filter_complex", graph] + maps + [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", out,
