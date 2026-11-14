@@ -217,7 +217,7 @@ def build_srt(words, clip_start: float, clip_end: float, path: str):
 
 
 def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
-              captions=True, watermark=None):
+              captions=True, watermark=None, caption_style="bold"):
     header = (
         "[Script Info]\nScriptType: v4.00+\n"
         f"PlayResX: {OUT_W}\nPlayResY: {OUT_H}\nWrapStyle: 0\n\n"
@@ -225,8 +225,8 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,"
         "BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,"
         "BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n"
-        "Style: Default,Liberation Sans,56,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
-        "1,0,0,0,100,100,0,0,1,5,1,2,40,40,340,1\n"
+        f"Style: Default,Liberation Sans,{{'bold': 64, 'classic': 54, 'neon': 60, 'minimal': 44}.get(caption_style, 64)},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
+        f"1,0,0,0,100,100,0,0,1,{{'bold': 6, 'classic': 4, 'neon': 5, 'minimal': 2}.get(caption_style, 6)},1,2,40,40,340,1\n"
         "Style: Hook,Liberation Sans,50,&H00FFFFFF,&H000000FF,&H40000000,&H64000000,"
         "1,0,0,0,100,100,0,0,3,14,0,8,50,50,150,1\n"
         "Style: Watermark,Liberation Sans,24,&H80FFFFFF,&H000000FF,&H80000000,&H00000000,"
@@ -260,7 +260,7 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
                         end = nxt_group - clip_start
                 end = max(end, start + 0.05)
                 text = " ".join(
-                    (r"{\c&H00FFFF&}" + _ass_text(x["word"]) + r"{\c&HFFFFFF&}")
+                    (r"{\c&H" + {"bold": "00FFFF", "classic": "0000FF", "neon": "00FFFF", "minimal": "00D7FF"}.get(caption_style, "00FFFF") + "&}" + _ass_text(x["word"]) + r"{\c&HFFFFFF&}")
                     if k == j else _ass_text(x["word"])
                     for k, x in enumerate(group)
                 )
