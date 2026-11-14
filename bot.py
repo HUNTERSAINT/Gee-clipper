@@ -57,7 +57,11 @@ HELP = (
     "/panel - button-based settings\n"
     "/preset viral|podcast|educational|cinematic|clean\n"
     "/queue, /cancel, /history\n"
-    "/watermark YourBrand (or off)\n\n"
+    "/watermark YourBrand (or off)\n"
+    "/formats all|vertical - 9:16, 1:1 and 16:9 exports\n"
+    "/silence on|off - trim long pauses\n"
+    "/translate Spanish - translated subtitles\n"
+    "/clearlogo - remove your uploaded logo\n\n"
     f"Videos up to {C.MAX_VIDEO_MINUTES} min. Send the same link again and "
     "it's instant (the transcript is cached)."
 )
