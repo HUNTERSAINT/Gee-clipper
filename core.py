@@ -53,6 +53,7 @@ class Opts:
     music: bool = True
     grade: bool = True
     watermark: str = ""
+    caption_style: str = "bold"
 
 
 # --------------------------------------------------------------------------- #
@@ -452,7 +453,7 @@ def make_clip(
         V.build_ass(
             words, clip["start"], clip["end"], os.path.join(workdir, ass_name),
             hook=hook_text if opts.hook else None, captions=opts.captions,
-            watermark=opts.watermark,
+            watermark=opts.watermark, caption_style=opts.caption_style,
         )
 
     log.info("Clip %s stage=layout starting", idx)
