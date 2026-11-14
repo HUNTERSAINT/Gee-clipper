@@ -625,13 +625,13 @@ def summarize_transcript(segments) -> str:
         takeaways = data.get("takeaways") or []
         if takeaways:
             section.append("Key takeaways: " + " • ".join(str(x) for x in takeaways[:5]))
-        reports.append("\\n".join(x for x in section if x))
-    return "\\n\\n".join(reports)
+        reports.append("\n".join(x for x in section if x))
+    return "\n\n".join(reports)
 
 
 def generate_title_ideas(segments) -> list[str]:
     """Generate accurate alternate titles and hooks from transcript evidence."""
-    transcript = "\\n".join(
+    transcript = "\n".join(
         f"[{s['start']:.0f}s] {s.get('text','')}" for s in segments
     )[:14000]
     prompt = (
