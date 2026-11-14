@@ -61,7 +61,10 @@ HELP = (
     "/formats all|vertical - 9:16, 1:1 and 16:9 exports\n"
     "/silence on|off - trim long pauses\n"
     "/translate Spanish - translated subtitles\n"
-    "/clearlogo - remove your uploaded logo\n\n"
+    "/outro Follow for more|off - branded end card\n"
+    "/clearlogo - remove your uploaded logo\n"
+    "/clearmusic - remove uploaded soundtrack\n"
+    "Send up to 3 YouTube links at once. Upload a logo photo or audio file to customise clips.\n\n"
     f"Videos up to {C.MAX_VIDEO_MINUTES} min. Send the same link again and "
     "it's instant (the transcript is cached)."
 )
@@ -89,6 +92,7 @@ def summary(o: core.Opts) -> str:
         + f"\nExports: {o.export_formats}"
         + f"\nSilence removal: {'on' if o.remove_silence else 'off'}"
         + f"\nOutro: {o.outro_text or 'off'}"
+        + f"\nCustom soundtrack: {'uploaded' if o.music_path else 'automatic library'}"
     )
 
 
