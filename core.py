@@ -57,6 +57,7 @@ class Opts:
     export_formats: str = "all"  # vertical only, or all social aspect ratios
     remove_silence: bool = True
     logo_path: str = ""
+    subtitle_language: str = "off"
 
 
 # --------------------------------------------------------------------------- #
@@ -435,6 +436,39 @@ def classify_music_mood(text: str) -> tuple[str, float]:
         return "calm", 2.5
 
 
+def translate_subtitle_file(source: str, target_language: str, output_path: str):
+    """Translate subtitle lines in bounded batches while preserving exact timecodes."""
+    raw = Path(source).read_text(encoding="utf-8")
+    blocks = [b for b in re.split(r"\\n\\s*\\n", raw.strip()) if b.strip()]
+    parsed = []
+    for block in blocks:
+        lines = block.splitlines()
+        if len(lines) >= 3 and "-->" in lines[1]:
+            parsed.append((lines[1], " ".join(lines[2:])))
+    translated = []
+    for offset in range(0, len(parsed), 35):
+        batch = parsed[offset:offset + 35]
+        payload = json.dumps([text for _, text in batch], ensure_ascii=False)
+        prompt = (
+            f"Translate each subtitle string into {target_language}. Preserve meaning, tone, "
+            "names and short-form speech. Return JSON only as {\\"translations\\":[...]} "
+            "with exactly the same number and order of strings."
+        )
+        try:
+            response = _ask(C.LLM_MODEL, prompt, payload)
+        except Exception:
+            response = _ask(C.LLM_FALLBACK_MODEL, prompt, payload)
+        values = json.loads(response.choices[0].message.content).get("translations", [])
+        if len(values) != len(batch):
+            raise RuntimeError("Translation response did not match subtitle count")
+        translated.extend(str(x).replace("\\n", " ").strip() for x in values)
+    is_vtt = output_path.lower().endswith(".vtt")
+    output = ["WEBVTT"] if is_vtt else []
+    for i, ((timecode, _), text) in enumerate(zip(parsed, translated), 1):
+        output.append((f"{timecode}\\n{text}" if is_vtt else f"{i}\\n{timecode}\\n{text}"))
+    Path(output_path).write_text("\\n\\n".join(output) + "\\n", encoding="utf-8")
+
+
 def make_clip(
     url: str, words, clip: dict, idx: int, workdir: str, opts: Opts, progress=None,
     used_tracks: dict | None = None,
@@ -477,7 +511,7 @@ def make_clip(
     report(f"Rendering vertical video for clip {idx}...")
     log.info("Clip %s stage=render starting", idx)
     spoken_text = " ".join(
-        str(w.get("word", "")) for w in words
+        str(w.get("word", "")) for w in clip_words
         if w.get("start", 0) >= clip["start"] and w.get("end", 0) <= clip["end"]
     )
     mood_text = " ".join((clip.get("title", ""), clip.get("description", ""), spoken_text))
@@ -511,7 +545,7 @@ def make_clip(
             V.render(raw, plan, ass_name, out, workdir, grade_vf=None, music=None, logo_path=opts.logo_path)
     log.info("Clip %s stage=render success bytes=%s", idx, os.path.getsize(out))
     if os.path.getsize(out) > C.TG_FILE_LIMIT:
-        V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track)
+        V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track, logo_path=opts.logo_path)
 
     result = {"video": out, "layout": plan["kind"], "track": track[1] if track else None}
     try:
@@ -529,6 +563,10 @@ def make_clip(
         srt_path = os.path.join(workdir, f"subtitles_{idx}.srt")
         V.build_srt(clip_words, clip["start"], clip["end"], srt_path)
         result["subtitles"] = srt_path
+        if opts.subtitle_language and opts.subtitle_language.lower() != "off":
+            translated_srt = os.path.join(workdir, f"subtitles_{idx}_{re.sub(r'[^a-z0-9]+', '_', opts.subtitle_language.lower())}.srt")
+            translate_subtitle_file(srt_path, opts.subtitle_language, translated_srt)
+            result["translated_subtitles"] = translated_srt
     except Exception:
         log.exception("subtitle export failed")
     try:
