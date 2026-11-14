@@ -115,6 +115,17 @@ def build_caption(clip: dict) -> str:
     ]
     return "\n".join(p for p in parts if p)[:1000]
 
+def build_caption_pack(clip: dict) -> str:
+    tags = " ".join("#" + t for t in clip.get("hashtags", []))
+    title = clip.get("title", "New clip")
+    desc = clip.get("description", "")
+    return (
+        "📲 READY-TO-POST CAPTIONS\\n\\n"
+        f"TIKTOK\\n{title}\\n{desc}\\n{tags}\\n\\n"
+        f"INSTAGRAM REELS\\n{desc}\\n\\n{tags}\\n\\n"
+        f"YOUTUBE SHORTS\\n{title}\\n{desc}\\n{tags}"
+    )[:3900]
+
 
 
 def settings_keyboard(o: core.Opts):
@@ -357,6 +368,10 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                         if thumb:
                             thumb.close()
                 sent += 1
+                try:
+                    await msg.reply_text(build_caption_pack(clip))
+                except Exception:
+                    log.exception("social caption pack send failed")
                 if "thumb" in res:
                     try:
                         with open(res["thumb"], "rb") as a, open(res["cover"], "rb") as b:
@@ -373,7 +388,12 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                 log.exception("clip %s failed", i)
                 await msg.reply_text(f"Clip {i} failed: {friendly_error(e)}")
 
-        await step(f"Done. {sent} clip(s) sent. Want more? /clips 6 then send the link again (instant).")
+        history = ctx.user_data.setdefault("history", [])
+        history.append({"title": str(info.get("title") or "YouTube video")[:100],
+                        "url": url, "clips": sent, "status": "completed" if sent else "no clips",
+                        "date": date.today().isoformat()})
+        del history[:-10]
+        await step(f"Done. {sent} clip(s) sent. Use /history for recent jobs.")
     except JobCancelled:
         try:
             await status.edit_text("Job cancelled.")
