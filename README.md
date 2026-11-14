@@ -13,6 +13,9 @@ A Telegram bot that turns a YouTube link into short vertical clips ready for Tik
 - **Loudness-normalised audio**
 - **Thumbnails**: the best frame is picked automatically (sharp, well lit, big face, eyes open) and the hook text is added. You get a 16:9 thumbnail for YouTube and a 9:16 cover. The cover is also set as the video's Telegram preview
 - **Title, description, hashtags and a 1-10 score**, ready to copy and paste
+- **Platform caption packs** for TikTok, Instagram Reels and YouTube Shorts
+- **Downloadable SRT subtitles** for each finished clip
+- **Optional text watermark** that can be set per user
 
 ## How it works
 
@@ -54,8 +57,14 @@ Send a YouTube link. Add a number to choose how many clips: `https://youtu.be/xx
 | `/music on\|off` | Background music matched to each clip |
 | `/grade on\|off` | Automatic colour grading |
 | `/settings` | Show current settings |
+| `/panel` | Button-based settings panel |
+| `/preset viral\|podcast\|educational\|cinematic\|clean` | Apply a ready-made editing preset |
+| `/watermark YourBrand` | Add a text watermark; use `/watermark off` to remove it |
+| `/queue` | Check your current queue status |
+| `/cancel` | Request cancellation of your current job |
+| `/history` | Show your last 10 jobs |
 
-Settings are per user and reset when the bot restarts.
+Settings, recent job history and daily usage are stored with Telegram's local persistence file. They survive ordinary process restarts while that file remains on disk. Hosts with ephemeral filesystems can lose them when a container is replaced; attach persistent storage and set `BOT_PERSISTENCE_FILE` to a path on that storage if long-term persistence is required. The queue and cancellation controls are process-local.
 
 Set `ALLOWED_USERS` to your Telegram ID to make the bot private, and keep `DAILY_LIMIT` low so strangers can't use up your free Groq quota.
 
