@@ -618,7 +618,7 @@ def translate_text(text: str, target_language: str) -> str:
     prompt = (
         f"Translate the following spoken dialogue into {target_language}. "
         "Preserve meaning, tone and names. Do not add explanations or speaker labels. "
-        "Return JSON only: {\\"translation\\": \\"translated dialogue\\"}."
+        'Return JSON only: {"translation": "translated dialogue"}.'
     )
     payload = (text or "")[:5500]
     try:

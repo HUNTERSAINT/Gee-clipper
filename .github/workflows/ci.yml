@@ -15,6 +15,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile all Python modules
-        run: python -m py_compile bot.py config.py core.py grade.py music.py video.py storage.py
+        run: python -m py_compile bot.py config.py core.py grade.py music.py video.py storage.py voiceover.py
       - name: Run storage tests
         run: python -m unittest discover -s tests -v
