@@ -228,6 +228,18 @@ async def cancel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Cancellation requested. Gee Clipper will stop after the current download/render step.")
 
 
+async def translate_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    language = " ".join(ctx.args).strip()[:40]
+    if not language:
+        await update.message.reply_text("Usage: /translate Spanish or /translate off")
+        return
+    get_opts(ctx).subtitle_language = "off" if language.lower() == "off" else language
+    await update.message.reply_text(
+        f"Translated subtitle language: {get_opts(ctx).subtitle_language}. "
+        "Original subtitles are still included."
+    )
+
+
 async def captionstyle_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     value = ctx.args[0].lower() if ctx.args else ""
     if value not in ("bold", "classic", "neon", "minimal"):
@@ -544,6 +556,12 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                             await msg.reply_text(f"{fmt.title()} export is too large for Telegram's upload limit; the vertical clip was sent.")
                     except Exception:
                         log.exception("social aspect-ratio export failed format=%s", fmt)
+                if res.get("translated_subtitles"):
+                    try:
+                        with open(res["translated_subtitles"], "rb") as translated_file:
+                            await msg.reply_document(translated_file, filename=f"gee-clipper-{i}-translated.srt", caption=f"🌍 Translated subtitles ({opts.subtitle_language})")
+                    except Exception:
+                        log.exception("translated subtitle send failed")
                 if res.get("subtitles"):
                     try:
                         with open(res["subtitles"], "rb") as subtitle_file:
@@ -613,6 +631,7 @@ async def post_init(app: Application):
             BotCommand("watermark", "Set or remove text watermark"),
             BotCommand("clearlogo", "Remove uploaded brand logo"),
             BotCommand("captionstyle", "Choose caption theme"),
+            BotCommand("translate", "Translate subtitles"),
             BotCommand("formats", "Choose video aspect-ratio exports"),
             BotCommand("silence", "Toggle silence removal"),
             BotCommand("stats", "Admin usage dashboard"),
@@ -660,6 +679,7 @@ def main():
     app.add_handler(CommandHandler("clearlogo", clearlogo_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, logo_upload))
     app.add_handler(CommandHandler("captionstyle", captionstyle_cmd))
+    app.add_handler(CommandHandler("translate", translate_cmd))
     app.add_handler(CommandHandler("formats", formats_cmd))
     app.add_handler(CommandHandler("silence", silence_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
