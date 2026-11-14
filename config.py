@@ -90,11 +90,11 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-large-v3-turbo")
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "qwen/qwen3.8-27b")
 
-MAX_VIDEO_MINUTES = _int("MAX_VIDEO_MINUTES", 90)
+MAX_VIDEO_MINUTES = _int("MAX_VIDEO_MINUTES", 240)
 DEFAULT_CLIPS = _int("DEFAULT_CLIPS", 3)
 MAX_CLIPS = _int("MAX_CLIPS", 6)
 CLIP_MIN_SEC = _int("CLIP_MIN_SEC", 20)
-CLIP_MAX_SEC = _int("CLIP_MAX_SEC", 75)
+CLIP_MAX_SEC = _int("CLIP_MAX_SEC", 60)
 SOURCE_HEIGHT = _int("SOURCE_HEIGHT", 720)
 
 # Videos per user per day (0 = unlimited). Protects your free Groq quota.
