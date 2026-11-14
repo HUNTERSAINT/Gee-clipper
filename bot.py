@@ -126,10 +126,10 @@ def build_caption_pack(clip: dict) -> str:
     title = clip.get("title", "New clip")
     desc = clip.get("description", "")
     return (
-        "📲 READY-TO-POST CAPTIONS\\n\\n"
-        f"TIKTOK\\n{title}\\n{desc}\\n{tags}\\n\\n"
-        f"INSTAGRAM REELS\\n{desc}\\n\\n{tags}\\n\\n"
-        f"YOUTUBE SHORTS\\n{title}\\n{desc}\\n{tags}"
+        "📲 READY-TO-POST CAPTIONS\n\n"
+        f"TIKTOK\n{title}\n{desc}\n{tags}\n\n"
+        f"INSTAGRAM REELS\n{desc}\n\n{tags}\n\n"
+        f"YOUTUBE SHORTS\n{title}\n{desc}\n{tags}"
     )[:3900]
 
 
@@ -151,7 +151,7 @@ def settings_keyboard(o: core.Opts):
 
 async def panel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     o = get_opts(ctx)
-    await update.message.reply_text("⚙️ Gee Clipper controls\\n\\n" + summary(o),
+    await update.message.reply_text("⚙️ Gee Clipper controls\n\n" + summary(o),
                                     reply_markup=settings_keyboard(o))
 
 
@@ -166,7 +166,7 @@ async def settings_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         o.layout = value
     elif action == "clips" and value.isdigit():
         o.clips = max(1, min(int(value), C.MAX_CLIPS))
-    await q.edit_message_text("⚙️ Gee Clipper controls\\n\\n" + summary(o),
+    await q.edit_message_text("⚙️ Gee Clipper controls\n\n" + summary(o),
                               reply_markup=settings_keyboard(o))
 
 
@@ -185,7 +185,7 @@ async def preset_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     o = get_opts(ctx)
     for key, value in presets[name].items():
         setattr(o, key, value)
-    await update.message.reply_text(f"{name.title()} preset applied.\\n\\n" + summary(o),
+    await update.message.reply_text(f"{name.title()} preset applied.\n\n" + summary(o),
                                     reply_markup=settings_keyboard(o))
 
 
@@ -194,7 +194,7 @@ async def queue_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     active = sum(1 for x in JOB_STATES.values() if x.get("status") == "processing")
     queued = sum(1 for x in JOB_STATES.values() if x.get("status") == "queued")
     mine = f"Your job is {state.get('status')}." if state else "You have no active job."
-    await update.message.reply_text(f"📋 Queue\\n{mine}\\nProcessing: {active}\\nWaiting: {queued}")
+    await update.message.reply_text(f"📋 Queue\n{mine}\nProcessing: {active}\nWaiting: {queued}")
 
 
 async def cancel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -224,7 +224,7 @@ async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = ["🕘 Recent jobs"]
     for item in history[-10:][::-1]:
         lines.append(f"• {item.get('title', 'Video')[:55]} — {item.get('clips', 0)} clips ({item.get('status', 'done')})")
-    await update.message.reply_text("\\n".join(lines))
+    await update.message.reply_text("\n".join(lines))
 
 
 # --------------------------------------------------------------------------- #
