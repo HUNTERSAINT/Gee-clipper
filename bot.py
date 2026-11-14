@@ -69,6 +69,7 @@ def summary(o: core.Opts) -> str:
         f"Hook title: {'on' if o.hook else 'off'}\n"
         f"Music: {'on' if o.music else 'off'}\n"
         f"Colour grade: {'on' if o.grade else 'off'}"
+        + f"\nWatermark: {o.watermark or 'off'}"
     )
 
 
@@ -198,6 +199,16 @@ async def cancel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     event.set()
     await update.message.reply_text("Cancellation requested. Gee Clipper will stop after the current download/render step.")
+
+
+async def watermark_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    o = get_opts(ctx)
+    value = " ".join(ctx.args).strip()[:40]
+    if not value:
+        await update.message.reply_text("Usage: /watermark YourBrand or /watermark off")
+        return
+    o.watermark = "" if value.lower() == "off" else value
+    await update.message.reply_text(f"Watermark: {o.watermark or 'off'}")
 
 
 async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -428,6 +439,7 @@ async def post_init(app: Application):
             BotCommand("queue", "Check queue"),
             BotCommand("cancel", "Cancel current job"),
             BotCommand("history", "Recent jobs"),
+            BotCommand("watermark", "Set or remove text watermark"),
         ]
     )
 
@@ -466,6 +478,7 @@ def main():
     app.add_handler(CommandHandler("queue", queue_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
+    app.add_handler(CommandHandler("watermark", watermark_cmd))
     app.add_handler(
         CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade"], settings_cmd)
     )
