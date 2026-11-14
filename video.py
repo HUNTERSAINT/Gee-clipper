@@ -62,41 +62,80 @@ def _small_gray(frame, width: int = 640):
 
 
 def _detect(gray):
-    """Plain grayscale first; histogram-equalised only if nothing is found
-    (equalising helps dark shots but can wash out flat, bright ones)."""
-    if _FRONTAL.empty():  # cascade data missing (e.g. OpenCV 5): no face features
+    """Return all usable frontal/profile face boxes, not just the largest face."""
+    if _FRONTAL.empty():
         return []
-    side = max(24, gray.shape[1] // 25)
+    side = max(24, gray.shape[1] // 30)
+    found = []
     for img in (gray, cv2.equalizeHist(gray)):
-        faces = _FRONTAL.detectMultiScale(img, 1.1, 5, minSize=(side, side))
-        if len(faces) == 0 and not _PROFILE.empty():
-            faces = _PROFILE.detectMultiScale(img, 1.1, 5, minSize=(side, side))
-        if len(faces):
-            return faces
-    return []
+        for classifier in (_FRONTAL, _PROFILE):
+            if classifier.empty():
+                continue
+            boxes = classifier.detectMultiScale(
+                img, scaleFactor=1.08, minNeighbors=4, minSize=(side, side)
+            )
+            for box in boxes:
+                x, y, w, h = map(int, box)
+                # De-duplicate near-identical boxes from equalised/original passes.
+                if not any(
+                    abs((x + w / 2) - (a + c / 2)) < max(w, c) * 0.35
+                    and abs((y + h / 2) - (b + d / 2)) < max(h, d) * 0.35
+                    for a, b, c, d in found
+                ):
+                    found.append((x, y, w, h))
+    return found
 
 
-def sample_faces(path: str, every: float = 0.5):
-    """Returns [(time, face_center_x 0-1 or None, face_height 0-1 or None)]."""
+def _choose_face(faces, previous=None):
+    """Prefer the same face over time; use size only to choose the first face."""
+    if not faces:
+        return None
+    if previous is None:
+        return max(faces, key=lambda f: f[2] * f[3])
+    px, py, pw, ph = previous
+    pcx, pcy = px + pw / 2, py + ph / 2
+
+    def score(face):
+        x, y, w, h = face
+        cx, cy = x + w / 2, y + h / 2
+        distance = math.hypot((cx - pcx) / max(1, pw), (cy - pcy) / max(1, ph))
+        size_change = abs(math.log(max(1, w * h) / max(1, pw * ph)))
+        return distance + 0.22 * size_change
+
+    candidate = min(faces, key=score)
+    # If the closest detection is implausibly far away, a new shot/speaker likely began.
+    if score(candidate) > 2.4:
+        return max(faces, key=lambda f: f[2] * f[3])
+    return candidate
+
+
+def sample_faces(path: str, every: float = 0.35):
+    """Sample faces and maintain identity continuity to avoid jumping to the largest face."""
     cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        return []
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     step = max(1, int(round(fps * every)))
-    samples, i = [], 0
-    while cap.grab():
-        if i % step == 0:
-            ok, frame = cap.retrieve()
-            if ok:
-                g = _small_gray(frame)
-                faces = _detect(g)
-                if len(faces):
-                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                    samples.append(
-                        (i / fps, (x + w / 2) / g.shape[1], h / g.shape[0])
-                    )
-                else:
-                    samples.append((i / fps, None, None))
-        i += 1
-    cap.release()
+    samples, previous, i = [], None, 0
+    try:
+        while cap.grab():
+            if i % step == 0:
+                ok, frame = cap.retrieve()
+                if ok:
+                    g = _small_gray(frame)
+                    faces = _detect(g)
+                    chosen = _choose_face(faces, previous)
+                    if chosen is not None:
+                        x, y, w, h = chosen
+                        previous = chosen
+                        samples.append(
+                            (i / fps, (x + w / 2) / g.shape[1], h / g.shape[0])
+                        )
+                    else:
+                        samples.append((i / fps, None, None))
+            i += 1
+    finally:
+        cap.release()
     return samples
 
 
@@ -164,7 +203,7 @@ def ass_time(t: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def _group_words(ws, max_words: int = 3, max_chars: int = 17):
+def _group_words(ws, max_words: int = 5, max_chars: int = 28):
     groups, cur = [], []
     for w in ws:
         txt = w["word"]
@@ -173,7 +212,7 @@ def _group_words(ws, max_words: int = 3, max_chars: int = 17):
             groups.append(cur)
             cur = []
         cur.append(w)
-        if txt.endswith((".", "?", "!")):
+        if txt.rstrip().endswith((".", "?", "!", ";", ":")):
             groups.append(cur)
             cur = []
     if cur:

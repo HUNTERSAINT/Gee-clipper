@@ -84,7 +84,7 @@ def _cookies_from_env() -> str:
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-large-v3-turbo")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-large-v3")
 # llama-3.3-70b-versatile and llama-3.1-8b-instant were retired for
 # developer-tier Groq accounts. Use currently supported replacements.
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")

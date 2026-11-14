@@ -176,6 +176,24 @@ def split_audio(src: str, workdir: str, chunk_sec: int = 900) -> list[Path]:
     return sorted(Path(workdir).glob("seg_*.mp3"))
 
 
+def _fallback_word_timestamps(segment: dict) -> list[dict]:
+    """Build approximate word cues only when the provider omits word timestamps."""
+    text = str(segment.get("text") or "").strip()
+    tokens = re.findall(r"\\S+", text)
+    start, end = float(segment.get("start") or 0), float(segment.get("end") or 0)
+    if not tokens or end <= start:
+        return []
+    # Allocate time by token length so long words do not flash as quickly as short ones.
+    weights = [max(1, len(re.sub(r"\\W", "", token))) for token in tokens]
+    total = sum(weights)
+    cursor, output = start, []
+    for token, weight in zip(tokens, weights):
+        token_end = cursor + (end - start) * weight / total
+        output.append({"word": token, "start": cursor, "end": token_end})
+        cursor = token_end
+    return output
+
+
 def transcribe(chunks: list[Path], chunk_sec: int = 900):
     segments, words, lang = [], [], None
     for idx, chunk in enumerate(chunks):
@@ -190,22 +208,44 @@ def transcribe(chunks: list[Path], chunk_sec: int = 900):
             )
         )
         lang = lang or _get(resp, "language")
+        chunk_segments = []
         for s in _get(resp, "segments", []) or []:
-            segments.append(
-                {
-                    "start": _get(s, "start") + offset,
-                    "end": _get(s, "end") + offset,
-                    "text": _get(s, "text", "").strip(),
-                }
-            )
+            item = {
+                "start": float(_get(s, "start") or 0) + offset,
+                "end": float(_get(s, "end") or 0) + offset,
+                "text": str(_get(s, "text", "") or "").strip(),
+            }
+            segments.append(item)
+            chunk_segments.append(item)
+        chunk_words = []
         for w in _get(resp, "words", []) or []:
-            words.append(
-                {
-                    "word": _get(w, "word", "").strip(),
-                    "start": _get(w, "start") + offset,
-                    "end": _get(w, "end") + offset,
-                }
+            start, end = _get(w, "start"), _get(w, "end")
+            token = str(_get(w, "word", "") or "").strip()
+            if token and start is not None and end is not None and float(end) > float(start):
+                chunk_words.append({
+                    "word": token,
+                    "start": float(start) + offset,
+                    "end": float(end) + offset,
+                })
+        if not chunk_words and chunk_segments:
+            log.warning(
+                "Whisper returned no word timestamps for chunk=%s; using approximate segment alignment",
+                idx + 1,
             )
+            for segment in chunk_segments:
+                local_segment = {
+                    "text": segment["text"],
+                    "start": segment["start"] - offset,
+                    "end": segment["end"] - offset,
+                }
+                for word in _fallback_word_timestamps(local_segment):
+                    chunk_words.append({
+                        **word,
+                        "start": word["start"] + offset,
+                        "end": word["end"] + offset,
+                    })
+        words.extend(chunk_words)
+    words.sort(key=lambda item: (item["start"], item["end"]))
     return segments, words, lang
 
 
