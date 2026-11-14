@@ -216,6 +216,60 @@ def build_srt(words, clip_start: float, clip_end: float, path: str):
         handle.write("\n\n".join(blocks) + ("\n" if blocks else ""))
 
 
+def remove_silence(path: str, words: list, clip_start: float, clip_end: float,
+                  max_gap: float = 1.15, padding: float = 0.18):
+    """Trim long transcript gaps while preserving natural breaths and remap word timestamps."""
+    relevant = [w for w in words if w.get("end", 0) > clip_start and w.get("start", 0) < clip_end]
+    if len(relevant) < 3:
+        return path, words, clip_end - clip_start
+    spans = []
+    for word in relevant:
+        start = max(0.0, float(word["start"]) - clip_start - padding)
+        end = min(clip_end - clip_start, float(word["end"]) - clip_start + padding)
+        if spans and start - spans[-1][1] <= max_gap:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], end))
+        else:
+            spans.append((start, end))
+    original = clip_end - clip_start
+    kept = sum(max(0.0, b - a) for a, b in spans)
+    if len(spans) < 2 or original - kept < 1.5:
+        return path, words, original
+    has_audio = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+         "stream=codec_type", "-of", "csv=p=0", path],
+        capture_output=True, text=True,
+    ).returncode == 0
+    parts, concat_inputs, remapped, offset = [], [], [], 0.0
+    for index, (start, end) in enumerate(spans):
+        parts.append(f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS[v{index}]")
+        concat_inputs.append(f"[v{index}]")
+        if has_audio:
+            parts.append(f"[0:a]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS[a{index}]")
+            concat_inputs.append(f"[a{index}]")
+        for word in relevant:
+            ws, we = float(word["start"]) - clip_start, float(word["end"]) - clip_start
+            if ws >= start - 0.02 and we <= end + 0.02:
+                remapped.append({
+                    "word": word.get("word", ""),
+                    "start": offset + max(0.0, ws - start),
+                    "end": offset + max(0.0, we - start),
+                })
+        offset += end - start
+    n = len(spans)
+    if has_audio:
+        parts.append("".join(concat_inputs) + f"concat=n={n}:v=1:a=1[vout][aout]")
+    else:
+        parts.append("".join(concat_inputs) + f"concat=n={n}:v=1:a=0[vout]")
+    out = os.path.splitext(path)[0] + "_tight.mp4"
+    maps = ["-map", "[vout]"] + (["-map", "[aout]"] if has_audio else [])
+    run(["ffmpeg", "-y", "-loglevel", "error", "-i", path,
+         "-filter_complex", ";".join(parts), *maps,
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", out])
+    log.info("Silence trim original=%.2fs kept=%.2fs removed=%.2fs", original, offset, original-offset)
+    return out, remapped, offset
+
+
 def build_vtt(words, clip_start: float, clip_end: float, path: str):
     """Write WebVTT captions with clip-relative timestamps."""
     selected = [w for w in words if w["start"] >= clip_start - 0.05 and w["end"] <= clip_end + 0.3]
