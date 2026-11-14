@@ -8,6 +8,8 @@ A Telegram bot that turns a YouTube link into short vertical clips ready for Tik
 - **Face-tracking crop** that follows the speaker with smooth pans. If no face is found, it uses a blurred-background layout so nothing is cut off
 - **Karaoke captions**, three words at a time with the spoken word highlighted
 - **Hook title banner** for the first 3 seconds
+- **Adaptive colour grading**: every clip is measured (exposure, contrast, colour cast, saturation) and graded to fit its mood, then checked on real frames so highlights, blacks and skin tones stay natural
+- **Clip-matched music**: royalty-free (CC0) tracks are analysed for tempo, energy and key, matched to each clip's mood and pacing, never repeated within one video, ducked under speech and loudness-normalised. If no track can be downloaded the clip is sent with its original audio
 - **Loudness-normalised audio**
 - **Thumbnails**: the best frame is picked automatically (sharp, well lit, big face, eyes open) and the hook text is added. You get a 16:9 thumbnail for YouTube and a 9:16 cover. The cover is also set as the video's Telegram preview
 - **Title, description, hashtags and a 1-10 score**, ready to copy and paste
@@ -49,6 +51,8 @@ Send a YouTube link. Add a number to choose how many clips: `https://youtu.be/xx
 | `/layout auto\|crop\|blur` | `auto` follows the face and falls back to blur |
 | `/captions on\|off` | Burned-in captions |
 | `/hook on\|off` | Title banner at the start |
+| `/music on\|off` | Background music matched to each clip |
+| `/grade on\|off` | Automatic colour grading |
 | `/settings` | Show current settings |
 
 Settings are per user and reset when the bot restarts.

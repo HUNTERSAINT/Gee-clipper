@@ -12,6 +12,8 @@ import yt_dlp
 from groq import Groq, RateLimitError
 
 import config as C
+import grade as G
+import music as M
 import video as V
 
 log = logging.getLogger("clipper.core")
@@ -48,6 +50,8 @@ class Opts:
     layout: str = "auto"  # auto | crop | blur
     captions: bool = True
     hook: bool = True
+    music: bool = True
+    grade: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -395,14 +399,15 @@ def download_section(url: str, start: float, end: float, workdir: str, base: str
 
 
 
-def classify_music_mood(text: str) -> str:
+def classify_music_mood(text: str) -> tuple[str, float]:
     """Use the language model to understand the clip and choose a soundtrack mood."""
     allowed = {"uplifting", "dramatic", "emotional", "energetic", "calm", "funny"}
     prompt = (
         "Classify the emotional tone and pacing of this short video transcript. "
         "Choose the best background music mood from: uplifting, dramatic, emotional, "
         "energetic, calm, funny. Judge the meaning and delivery implied by the words, "
-        "not isolated keyword matches. Return JSON only: {\"mood\":\"one category\"}."
+        "not isolated keyword matches. Also rate the pacing/intensity from 1 (very slow, quiet) "
+        "to 5 (fast, intense). Return JSON only: {\"mood\":\"one category\",\"energy\":3}."
     )
     try:
         try:
@@ -415,14 +420,19 @@ def classify_music_mood(text: str) -> str:
         mood = str(result.get("mood", "")).strip().lower()
         if mood not in allowed:
             raise ValueError("LLM returned an unsupported soundtrack mood")
-        return mood
+        try:
+            energy = min(5.0, max(1.0, float(result.get("energy", 3))))
+        except (TypeError, ValueError):
+            energy = 3.0
+        return mood, energy
     except Exception:
         log.exception("Soundtrack mood classification failed; using calm instrumental")
-        return "calm"
+        return "calm", 2.5
 
 
 def make_clip(
-    url: str, words, clip: dict, idx: int, workdir: str, opts: Opts, progress=None
+    url: str, words, clip: dict, idx: int, workdir: str, opts: Opts, progress=None,
+    used_tracks: dict | None = None,
 ) -> dict:
     def report(stage):
         if progress:
@@ -454,14 +464,39 @@ def make_clip(
         if w.get("start", 0) >= clip["start"] and w.get("end", 0) <= clip["end"]
     )
     mood_text = " ".join((clip.get("title", ""), clip.get("description", ""), spoken_text))
-    music_mood = classify_music_mood(mood_text)
-    log.info("Clip %s soundtrack mood=%s", idx, music_mood)
-    V.render(raw, plan, ass_name, out, workdir, mood_text=music_mood)
+    music_mood, energy = classify_music_mood(mood_text) if (opts.music or opts.grade) else ("calm", 3.0)
+    log.info("Clip %s mood=%s energy=%.1f", idx, music_mood, energy)
+    grade_vf = None
+    if opts.grade:
+        try:
+            g = G.plan(raw, music_mood, energy)
+            grade_vf = g["vf"] if g else None
+        except Exception:
+            log.exception("Grading failed; rendering ungraded")
+    track = None
+    if opts.music:
+        try:
+            track = M.pick(music_mood, energy, used_tracks)
+        except Exception:
+            log.exception("Music selection failed; continuing without music")
+    try:
+        V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=track)
+    except RuntimeError:
+        if not track:
+            raise
+        log.exception("Render with music failed; retrying without music")
+        track = None
+        try:
+            V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=None)
+        except RuntimeError:
+            log.exception("Render with grade failed; retrying plain")
+            grade_vf = None
+            V.render(raw, plan, ass_name, out, workdir, grade_vf=None, music=None)
     log.info("Clip %s stage=render success bytes=%s", idx, os.path.getsize(out))
     if os.path.getsize(out) > C.TG_FILE_LIMIT:
-        V.render(raw, plan, ass_name, out, workdir, crf=32)
+        V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track)
 
-    result = {"video": out, "layout": plan["kind"]}
+    result = {"video": out, "layout": plan["kind"], "track": track[1] if track else None}
     try:
         report(f"Creating thumbnails for clip {idx}...")
         log.info("Clip %s stage=thumbnails starting", idx)

@@ -43,6 +43,8 @@ HELP = (
     "/layout auto|crop|blur - auto follows the speaker's face\n"
     "/captions on|off\n"
     "/hook on|off - title banner at the start\n"
+    "/music on|off - background music matched to each clip\n"
+    "/grade on|off - automatic colour grading\n"
     "/settings - show current settings\n\n"
     f"Videos up to {C.MAX_VIDEO_MINUTES} min. Send the same link again and "
     "it's instant (the transcript is cached)."
@@ -57,7 +59,9 @@ def summary(o: core.Opts) -> str:
     return (
         f"Clips: {o.clips}\nLayout: {o.layout}\n"
         f"Captions: {'on' if o.captions else 'off'}\n"
-        f"Hook title: {'on' if o.hook else 'off'}"
+        f"Hook title: {'on' if o.hook else 'off'}\n"
+        f"Music: {'on' if o.music else 'off'}\n"
+        f"Colour grade: {'on' if o.grade else 'off'}"
     )
 
 
@@ -122,7 +126,7 @@ async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         o.clips = max(1, min(int(arg), C.MAX_CLIPS))
     elif cmd == "layout" and arg in ("auto", "crop", "blur"):
         o.layout = arg
-    elif cmd in ("captions", "hook") and arg in ("on", "off"):
+    elif cmd in ("captions", "hook", "music", "grade") and arg in ("on", "off"):
         setattr(o, cmd, arg == "on")
     else:
         usage = {
@@ -130,6 +134,8 @@ async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "layout": "/layout auto|crop|blur",
             "captions": "/captions on|off",
             "hook": "/hook on|off",
+            "music": "/music on|off",
+            "grade": "/grade on|off",
         }[cmd]
         await update.message.reply_text(f"Usage: {usage}")
         return
@@ -220,6 +226,7 @@ async def process(update: Update, url: str, opts: core.Opts):
             return
 
         sent = 0
+        used_tracks: dict = {}  # keeps each clip of this video on a different song
         for i, clip in enumerate(clips, 1):
             await step(f"Preparing clip {i}/{len(clips)}...")
             try:
@@ -229,7 +236,7 @@ async def process(update: Update, url: str, opts: core.Opts):
                     asyncio.run_coroutine_threadsafe(step(label), loop)
 
                 res = await asyncio.to_thread(
-                    core.make_clip, url, words, clip, i, workdir, opts, clip_progress
+                    core.make_clip, url, words, clip, i, workdir, opts, clip_progress, used_tracks
                 )
                 with open(res["video"], "rb") as f:
                     thumb = open(res["cover_small"], "rb") if "cover_small" in res else None
@@ -281,6 +288,8 @@ async def post_init(app: Application):
             BotCommand("layout", "auto | crop | blur"),
             BotCommand("captions", "on | off"),
             BotCommand("hook", "on | off"),
+            BotCommand("music", "on | off"),
+            BotCommand("grade", "on | off"),
         ]
     )
 
@@ -312,7 +321,7 @@ def main():
     )
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(
-        CommandHandler(["settings", "clips", "layout", "captions", "hook"], settings_cmd)
+        CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade"], settings_cmd)
     )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
     log.info("Bot running")

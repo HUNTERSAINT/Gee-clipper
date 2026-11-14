@@ -238,104 +238,9 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
 # --------------------------------------------------------------------------- #
 # render the 9:16 clip
 # --------------------------------------------------------------------------- #
-_MUSIC_LIBRARY = {
-    # John Bartmann's individual Free Music Archive pages mark these tracks CC0 1.0.
-    # Direct FMA storage URLs avoid scraping a third-party streaming player.
-    "uplifting": [
-        ("earning-happiness", "John_Bartmann_-_04_-_Earning_Happiness.mp3"),
-        ("umlungu", "John_Bartmann_-_20_-_Umlungu.mp3"),
-    ],
-    "dramatic": [
-        ("secret-agent-rock", "John_Bartmann_-_17_-_Secret_Agent_Rock.mp3"),
-        ("african-moon", "John_Bartmann_-_07_-_African_Moon.mp3"),
-    ],
-    "emotional": [
-        ("tender-moment", "John_Bartmann_-_19_-_Tender_Moment.mp3"),
-        ("heart-of-acceptance", "John_Bartmann_-_10_-_Heart_of_Acceptance.mp3"),
-    ],
-    "energetic": [
-        ("gameshow-brazz", "John_Bartmann_-_08_-_Gameshow_Brazz.mp3"),
-        ("bouncy-gypsy-beats", "John_Bartmann_-_03_-_Bouncy_Gypsy_Beats.mp3"),
-    ],
-    "calm": [
-        ("somewhere-nice", "John_Bartmann_-_16_-_Somewhere_Nice.mp3"),
-        ("home-at-last", "John_Bartmann_-_05_-_Home_At_Last.mp3"),
-    ],
-    "funny": [
-        ("mad-hatter-tea-party", "John_Bartmann_-_01_-_Mad_Hatter_Tea_Party.mp3"),
-        ("happy-clappy", "John_Bartmann_-_09_-_Happy_Clappy.mp3"),
-    ],
-}
-
-
-def _download_music_track(mood: str) -> tuple[str, str]:
-    """Fetch a real CC0 recording and cache it between clips on this instance."""
-    import hashlib
-    import urllib.request
-
-    choices = _MUSIC_LIBRARY.get(mood, _MUSIC_LIBRARY["calm"])
-    cache_dir = os.getenv("MUSIC_CACHE_DIR", "/tmp/gee-clipper-music")
-    os.makedirs(cache_dir, exist_ok=True)
-    # Rotate deterministically so clips of the same mood do not always sound alike.
-    seed = int(hashlib.sha256((mood + str(len(os.listdir(cache_dir)))).encode()).hexdigest()[:8], 16)
-    ordered = choices[seed % len(choices):] + choices[:seed % len(choices)]
-    base = (
-        "https://files.freemusicarchive.org/storage-freemusicarchive-org/"
-        "music/ccCommunity/John_Bartmann/Public_Domain_Soundtrack_Music_Album_One/"
-    )
-    errors = []
-    for slug, filename in ordered:
-        target = os.path.join(cache_dir, slug + ".mp3")
-        if os.path.isfile(target) and os.path.getsize(target) > 50000:
-            return target, slug
-        tmp = target + ".part"
-        try:
-            req = urllib.request.Request(
-                base + filename,
-                headers={"User-Agent": "GeeClipper/1.0 (CC0 soundtrack cache)"},
-            )
-            with urllib.request.urlopen(req, timeout=35) as response, open(tmp, "wb") as out:
-                while True:
-                    chunk = response.read(1024 * 256)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-            if os.path.getsize(tmp) < 50000:
-                raise RuntimeError("Downloaded music file was unexpectedly small")
-            check = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "a:0",
-                 "-show_entries", "stream=codec_type", "-of", "csv=p=0", tmp],
-                capture_output=True, text=True, timeout=15,
-            )
-            if check.returncode != 0 or not check.stdout.strip():
-                raise RuntimeError("Downloaded file is not a valid audio track")
-            os.replace(tmp, target)
-            log.info("Music library selected track=%s mood=%s source=Free Music Archive CC0", slug, mood)
-            return target, slug
-        except Exception as exc:
-            errors.append(f"{slug}: {type(exc).__name__}")
-            try:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-            except OSError:
-                pass
-            log.warning("Music download failed track=%s reason=%s", slug, type(exc).__name__)
-    raise RuntimeError(
-        "Could not fetch a licensed background music track from the CC0 music library. "
-        "No synthetic substitute was added. " + "; ".join(errors)
-    )
-
-
 def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
-           crf: int = 24, mood_text: str = "calm") -> None:
-    # Visible cinematic grade: stronger contrast/saturation, cool shadows,
-    # warm highlights and a restrained vignette. Applied to every layout.
-    grade = (
-        ",eq=contrast=1.30:saturation=1.28:brightness=0.008:gamma=1.02"
-        ",colorbalance=rs=0.025:gs=0.006:bs=-0.025:"
-        "rm=0.012:gm=0.002:bm=-0.012:rh=0.025:gh=0.006:bh=-0.025"
-        ",vignette=PI/5,unsharp=5:5:0.55:3:3:0.0"
-    )
+           crf: int = 24, grade_vf: str | None = None, music=None) -> None:
+    grade = ("," + grade_vf) if grade_vf else ""
     ass = f",ass={ass_name}" if ass_name else ""
     kind = plan["kind"]
     if kind == "crop":
@@ -357,14 +262,12 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
         )
         video_graph = f"[0:v]{vf}[vout]"
     else:
-        # Grade the foreground and background separately before compositing;
-        # this keeps the colour treatment visible even in blur-fill mode.
         video_graph = (
             "[0:v]split[a][b];"
             f"[a]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
-            f"crop={OUT_W}:{OUT_H},boxblur=25:6,eq=brightness=-0.12{grade}[bg];"
-            f"[b]scale={OUT_W}:-2{grade}[fg];"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1"
+            f"crop={OUT_W}:{OUT_H},boxblur=25:6,eq=brightness=-0.12[bg];"
+            f"[b]scale={OUT_W}:-2[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1{grade}"
             f"{ass}[vout]"
         )
 
@@ -374,36 +277,23 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
         capture_output=True, text=True,
     )
     has_audio = audio_probe.returncode == 0 and bool(audio_probe.stdout.strip())
-    music_path, music_slug = _download_music_track(mood_text if mood_text in _MUSIC_LIBRARY else "calm")
-    if has_audio:
-        # Sidechain ducking makes the recorded soundtrack audible between phrases
-        # while automatically lowering it under speech.
-        audio_filter = (
-            "[0:a:0]aresample=48000,highpass=f=75,volume=1.0[voice];"
-            "[1:a:0]aresample=48000,volume=0.48[music];"
-            "[music][voice]sidechaincompress=threshold=0.035:ratio=4:"
-            "attack=18:release=420:makeup=1[ducked];"
-            "[voice][ducked]amix=inputs=2:duration=first:dropout_transition=1,"
-            "alimiter=limit=0.96[aout]"
-        )
+    dur = probe(raw)["dur"]
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
+    if music:
+        import music as M
+        music_path, music_slug, mfeat = music
+        cmd += ["-stream_loop", "-1", "-i", music_path]
+        graph = video_graph + ";" + M.mix_filter(has_audio, mfeat, dur)
+        maps = ["-map", "[vout]", "-map", "[aout]", "-t", f"{dur:.2f}"]
+        log.info("Clip soundtrack track=%s voice_present=%s", music_slug, has_audio)
     else:
-        audio_filter = "[1:a:0]aresample=48000,volume=0.48,alimiter=limit=0.96[aout]"
-
-    filter_graph = video_graph + ";" + audio_filter
-    log.info("Clip soundtrack track=%s mood=%s voice_present=%s", music_slug, mood_text, has_audio)
-    run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error", "-i", raw,
-            "-stream_loop", "-1", "-i", music_path,
-            "-filter_complex", filter_graph,
-            "-map", "[vout]", "-map", "[aout]",
-            "-shortest", "-c:v", "libx264", "-preset", "veryfast",
-            "-crf", str(crf), "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "160k",
-            "-movflags", "+faststart", out,
-        ],
-        cwd=workdir,
-    )
+        graph = video_graph
+        maps = ["-map", "[vout]"] + (["-map", "0:a:0"] if has_audio else [])
+    cmd += ["-filter_complex", graph] + maps + [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", out,
+    ]
+    run(cmd, cwd=workdir)
 
 
 # --------------------------------------------------------------------------- #
