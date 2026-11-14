@@ -238,52 +238,67 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
 # --------------------------------------------------------------------------- #
 # render the 9:16 clip
 # --------------------------------------------------------------------------- #
-def create_ambient_bed(path: str, duration: float, sample_rate: int = 44100) -> None:
-    """Create a quiet, original ambient chord bed; no external/copyrighted audio."""
+def _music_mood(text: str) -> str:
+    """Choose an instrumental feel from the actual words in this clip."""
+    s = (text or "").lower()
+    groups = {
+        "uplifting": ("inspire", "hope", "success", "achieve", "believe", "dream", "motivat", "overcome", "grateful", "growth"),
+        "dramatic": ("secret", "shocking", "danger", "mistake", "warning", "truth", "fear", "risk", "crisis", "never", "exposed"),
+        "emotional": ("love", "heart", "miss", "loss", "pain", "family", "cry", "life", "regret", "sorry", "memory"),
+        "energetic": ("win", "money", "business", "fast", "power", "crazy", "game", "fight", "strong", "challenge", "amazing"),
+        "calm": ("peace", "mindful", "relax", "health", "learn", "explain", "understand", "think", "advice", "simple"),
+    }
+    scores = {m: sum(s.count(w) for w in words) for m, words in groups.items()}
+    return max(scores, key=scores.get) if max(scores.values(), default=0) else "uplifting"
+
+
+def create_ambient_bed(path: str, duration: float, mood_text: str = "",
+                       sample_rate: int = 44100) -> None:
+    """Create original mood-matched instrumental music without external recordings."""
     duration = max(1.0, float(duration))
     total = int(duration * sample_rate)
-    # A gentle four-chord progression with soft harmonics and slow breathing.
-    progression = [
-        (130.81, 164.81, 196.00, 261.63),  # C
-        (110.00, 130.81, 164.81, 220.00),  # Am
-        (87.31, 130.81, 174.61, 220.00),   # F
-        (98.00, 146.83, 196.00, 246.94),   # G
-    ]
-    chunk = 5 * sample_rate
+    mood = _music_mood(mood_text)
+    presets = {
+        "uplifting": (112.0, (261.63, 329.63, 392.00, 493.88), 0.25),
+        "dramatic": (92.0, (220.00, 261.63, 329.63, 392.00), 0.19),
+        "emotional": (78.0, (220.00, 261.63, 329.63, 440.00), 0.16),
+        "energetic": (124.0, (293.66, 369.99, 440.00, 554.37), 0.30),
+        "calm": (84.0, (261.63, 329.63, 392.00, 440.00), 0.14),
+    }
+    bpm, notes, level = presets[mood]
+    beat = 60.0 / bpm
+    chunk = 4 * sample_rate
     with wave.open(path, "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(sample_rate)
         for offset in range(0, total, chunk):
             count = min(chunk, total - offset)
-            t = (np.arange(offset, offset + count, dtype=np.float64) / sample_rate)
-            chord_index = (t / 8.0).astype(int) % len(progression)
-            signal = np.zeros(count, dtype=np.float64)
-            for ci, chord in enumerate(progression):
-                mask = chord_index == ci
-                if not np.any(mask):
-                    continue
-                local_t = t[mask]
-                pad = np.zeros(local_t.size, dtype=np.float64)
-                for note in chord:
-                    pad += (
-                        np.sin(2 * np.pi * note * local_t)
-                        + 0.22 * np.sin(2 * np.pi * note * 2 * local_t)
-                    ) / len(chord)
-                signal[mask] = pad
-            # Slow level movement, with clean fade-in and fade-out.
-            breathe = 0.78 + 0.12 * np.sin(2 * np.pi * t / 11.0)
-            fade_in = np.clip(t / 1.8, 0.0, 1.0)
-            fade_out = np.clip((duration - t) / 2.0, 0.0, 1.0)
-            signal *= 0.16 * breathe * fade_in * fade_out
-            pcm = np.clip(signal * 32767, -32768, 32767).astype("<i2")
+            t = np.arange(offset, offset + count, dtype=np.float64) / sample_rate
+            beat_pos = t / beat
+            chord_idx = (beat_pos // 4).astype(int) % 4
+            chord = np.asarray(notes, dtype=np.float64)[chord_idx]
+            phase = np.mod(beat_pos, 4.0)
+            pad = np.sin(2*np.pi*chord*t) + 0.22*np.sin(4*np.pi*chord*t)
+            pad += 0.45*np.sin(2*np.pi*(chord*0.5)*t)
+            bass_freq = np.asarray(notes, dtype=np.float64)[chord_idx] * 0.5
+            beat_phase = np.mod(beat_pos, 1.0)
+            bass = 0.24*np.sin(2*np.pi*bass_freq*t)*np.exp(-beat_phase*2.8)
+            kick = 0.16*np.sin(2*np.pi*(48+28*np.exp(-beat_phase*18))*t)*np.exp(-beat_phase*13)
+            offbeat = np.mod(beat_pos+0.5, 1.0)
+            tick = 0.025*np.sin(2*np.pi*7200*t)*np.exp(-offbeat*22)
+            signal = 0.48*pad + bass + kick + tick
+            fade_in = np.clip(t/0.7, 0.0, 1.0)
+            fade_out = np.clip((duration-t)/1.0, 0.0, 1.0)
+            signal *= level * fade_in * fade_out
+            pcm = np.clip(signal*32767, -32768, 32767).astype("<i2")
             wav.writeframes(pcm.tobytes())
 
 
 def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
-           crf: int = 24) -> None:
+           crf: int = 24, mood_text: str = "") -> None:
     ass = f",ass={ass_name}" if ass_name else ""
-    grade = ",eq=contrast=1.05:saturation=1.08:brightness=0.005:gamma=1.02"
+    grade = ",eq=contrast=1.16:saturation=1.22:brightness=0.012:gamma=1.04,unsharp=5:5:0.45:3:3:0.0"
     kind = plan["kind"]
     if kind == "crop":
         vf = (
@@ -323,17 +338,19 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
     has_audio = audio_probe.returncode == 0 and bool(audio_probe.stdout.strip())
     bed = os.path.join(workdir, "ambient_bed.wav")
     duration = probe(raw)["dur"]
-    create_ambient_bed(bed, duration)
+    create_ambient_bed(bed, duration, mood_text)
 
     if has_audio:
         audio_filter = (
-            "[0:a:0]volume=1.0[original];"
-            "[1:a:0]volume=0.10[background];"
-            "[original][background]amix=inputs=2:duration=first:"
-            "dropout_transition=2,alimiter=limit=0.95[aout]"
+            "[0:a:0]aresample=44100,volume=1.0[voice];"
+            "[1:a:0]aresample=44100,volume=1.45[music];"
+            "[music][voice]sidechaincompress=threshold=0.025:ratio=5:"
+            "attack=18:release=420:makeup=1[ducked];"
+            "[voice][ducked]amix=inputs=2:duration=first:dropout_transition=1,"
+            "alimiter=limit=0.96[aout]"
         )
     else:
-        audio_filter = "[1:a:0]volume=0.10[aout]"
+        audio_filter = "[1:a:0]volume=1.35,alimiter=limit=0.96[aout]"
 
     if kind == "blur":
         vargs[1] += ";" + audio_filter
