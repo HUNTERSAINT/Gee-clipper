@@ -64,6 +64,7 @@ HELP = (
     "/formats all|vertical - 9:16, 1:1 and 16:9 exports\n"
     "/silence on|off - trim long pauses\n"
     "/translate Spanish - translated subtitles\n"
+    "/voiceover Spanish - translated spoken narration (or off)\n"
     "/outro Follow for more|off - branded end card\n"
     "/clearlogo - remove your uploaded logo\n"
     "/clearmusic - remove uploaded soundtrack\n"
@@ -91,7 +92,8 @@ def summary(o: core.Opts) -> str:
         f"Music: {'on' if o.music else 'off'}\n"
         f"Colour grade: {'on' if o.grade else 'off'}"
         + f"\nCaption theme: {o.caption_style}"
-        + f"\nWatermark: {o.watermark or 'off'}"
+        + f"\nVoiceover: {o.voiceover_language}"
+        + f"\nWatermark: {o.watermark or 'off'}
         + f"\nExports: {o.export_formats}"
         + f"\nSilence removal: {'on' if o.remove_silence else 'off'}"
         + f"\nOutro: {o.outro_text or 'off'}"
@@ -253,6 +255,20 @@ async def translate_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Translated subtitle language: {get_opts(ctx).subtitle_language}. "
         "Original subtitles are still included."
+    )
+
+
+
+
+async def voiceover_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    language = " ".join(ctx.args).strip()
+    if not language:
+        await update.message.reply_text("Usage: /voiceover Spanish (or /voiceover off). Supported voices include English, Spanish, French, German, Portuguese, Italian, Hindi, Arabic, Japanese, Korean and Chinese.")
+        return
+    get_opts(ctx).voiceover_language = "off" if language.lower() == "off" else language
+    await update.message.reply_text(
+        "Translated voiceover: " + get_opts(ctx).voiceover_language +
+        ". It replaces the original speech in the generated clip; turn it off to keep the original voice."
     )
 
 
@@ -820,6 +836,7 @@ async def post_init(app: Application):
             BotCommand("clearmusic", "Remove uploaded soundtrack"),
             BotCommand("captionstyle", "Choose caption theme"),
             BotCommand("translate", "Translate subtitles"),
+            BotCommand("voiceover", "Translated spoken narration"),
             BotCommand("outro", "Set a branded end card"),
             BotCommand("formats", "Choose video aspect-ratio exports"),
             BotCommand("silence", "Toggle silence removal"),
@@ -881,6 +898,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, logo_upload))
     app.add_handler(CommandHandler("captionstyle", captionstyle_cmd))
     app.add_handler(CommandHandler("translate", translate_cmd))
+    app.add_handler(CommandHandler("voiceover", voiceover_cmd))
     app.add_handler(CommandHandler("outro", outro_cmd))
     app.add_handler(CommandHandler("formats", formats_cmd))
     app.add_handler(CommandHandler("silence", silence_cmd))

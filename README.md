@@ -156,3 +156,13 @@ access; never commit API secrets.
 After processing a video, /transcript downloads its timestamped transcript, /summary creates
 AI show notes and chapter suggestions, and /titles generates alternative hooks and titles.
 These are on-demand Groq requests and use your configured model quota.
+
+
+## Translated voiceovers
+
+Use /voiceover Spanish (or French, German, Portuguese, Italian, Hindi, Arabic, Japanese,
+Korean or Chinese) to translate the spoken dialogue and generate a synthetic narration.
+The narration replaces the original speech in the finished clip and is mixed with the
+selected background music. Use /voiceover off to preserve the original speaker. Voiceover
+is optional and uses the Edge TTS service plus Groq translation; service availability and
+network access are required.

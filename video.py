@@ -387,7 +387,8 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
 # render the 9:16 clip
 # --------------------------------------------------------------------------- #
 def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
-           crf: int = 24, grade_vf: str | None = None, music=None, logo_path: str | None = None) -> None:
+           crf: int = 24, grade_vf: str | None = None, music=None,
+           logo_path: str | None = None, voiceover_path: str | None = None) -> None:
     grade = ("," + grade_vf) if grade_vf else ""
     ass = f",ass={ass_name}" if ass_name else ""
     kind = plan["kind"]
@@ -420,14 +421,22 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
         )
 
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
+    music_input = None
+    voiceover_input = None
+    next_input = 1
     if music:
         import music as M
         music_path, music_slug, mfeat = music
+        music_input = next_input
         cmd += ["-stream_loop", "-1", "-i", music_path]
+        next_input += 1
         log.info("Clip soundtrack track=%s", music_slug)
-    logo_input = None
+    if voiceover_path and os.path.isfile(voiceover_path):
+        voiceover_input = next_input
+        cmd += ["-i", voiceover_path]
+        next_input += 1
     if logo_path and os.path.isfile(logo_path):
-        logo_input = 2 if music else 1
+        logo_input = next_input
         cmd += ["-i", logo_path]
         video_graph += (
             f";[{logo_input}:v]scale=150:-1,format=rgba[brandlogo];"
@@ -445,9 +454,21 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
     has_audio = audio_probe.returncode == 0 and bool(audio_probe.stdout.strip())
     dur = probe(raw)["dur"]
     if music:
-        graph = video_graph + ";" + M.mix_filter(has_audio, mfeat, dur)
+        voice_present = bool(voiceover_input is not None or has_audio)
+        audio_graph = M.mix_filter(voice_present, mfeat, dur)
+        if voiceover_input is not None:
+            audio_graph = audio_graph.replace("[0:a:0]", f"[{voiceover_input}:a:0]")
+        graph = video_graph + ";" + audio_graph
         maps = ["-map", video_label, "-map", "[aout]", "-t", f"{dur:.2f}"]
-        log.info("Clip soundtrack track=%s voice_present=%s", music_slug, has_audio)
+        log.info("Clip soundtrack track=%s voice_present=%s voiceover=%s",
+                 music_slug, voice_present, bool(voiceover_input is not None))
+    elif voiceover_input is not None:
+        graph = (
+            video_graph + ";"
+            f"[{voiceover_input}:a:0]aresample=48000,loudnorm=I=-16:TP=-2:LRA=9,"
+            f"apad,atrim=duration={dur:.2f},alimiter=limit=0.95[aout]"
+        )
+        maps = ["-map", video_label, "-map", "[aout]", "-t", f"{dur:.2f}"]
     else:
         graph = video_graph
         maps = ["-map", video_label] + (["-map", "0:a:0"] if has_audio else [])

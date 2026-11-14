@@ -15,6 +15,7 @@ import config as C
 import grade as G
 import music as M
 import video as V
+import voiceover as VO
 
 log = logging.getLogger("clipper.core")
 
@@ -58,6 +59,7 @@ class Opts:
     remove_silence: bool = True
     logo_path: str = ""
     music_path: str = ""
+    voiceover_language: str = "off"
     subtitle_language: str = "off"
     outro_text: str = "Follow for more"
     music_path: str = ""
@@ -520,6 +522,18 @@ def make_clip(
     mood_text = " ".join((clip.get("title", ""), clip.get("description", ""), spoken_text))
     music_mood, energy = classify_music_mood(mood_text) if (opts.music or opts.grade) else ("calm", 3.0)
     log.info("Clip %s mood=%s energy=%.1f", idx, music_mood, energy)
+    voiceover_path = None
+    if opts.voiceover_language and opts.voiceover_language.lower() != "off":
+        try:
+            report(f"Translating and generating {opts.voiceover_language} voiceover for clip {idx}...")
+            translated_speech = translate_text(spoken_text, opts.voiceover_language)
+            voiceover_path = VO.generate(
+                translated_speech, opts.voiceover_language, workdir, idx, V.probe(raw)["dur"]
+            )
+            log.info("Clip %s translated voiceover ready language=%s", idx, opts.voiceover_language)
+        except Exception:
+            log.exception("Voiceover generation failed; preserving original spoken audio")
+            voiceover_path = None
     grade_vf = None
     if opts.grade:
         try:
@@ -543,18 +557,18 @@ def make_clip(
             except Exception:
                 log.exception("Built-in music selection failed; continuing without music")
     try:
-        V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=track, logo_path=opts.logo_path)
+        V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=track, logo_path=opts.logo_path, voiceover_path=voiceover_path)
     except RuntimeError:
         if not track:
             raise
         log.exception("Render with music failed; retrying without music")
         track = None
         try:
-            V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=None, logo_path=opts.logo_path)
+            V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=None, logo_path=opts.logo_path, voiceover_path=voiceover_path)
         except RuntimeError:
             log.exception("Render with grade failed; retrying plain")
             grade_vf = None
-            V.render(raw, plan, ass_name, out, workdir, grade_vf=None, music=None, logo_path=opts.logo_path)
+            V.render(raw, plan, ass_name, out, workdir, grade_vf=None, music=None, logo_path=opts.logo_path, voiceover_path=voiceover_path)
     log.info("Clip %s stage=render success bytes=%s", idx, os.path.getsize(out))
     if os.path.getsize(out) > C.TG_FILE_LIMIT:
         V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track, logo_path=opts.logo_path)
@@ -595,6 +609,27 @@ def make_clip(
         log.exception("thumbnail generation failed")
     log.info("Clip %s stage=complete", idx)
     return result
+
+
+
+
+def translate_text(text: str, target_language: str) -> str:
+    """Translate spoken dialogue for optional voiceover, retaining names and meaning."""
+    prompt = (
+        f"Translate the following spoken dialogue into {target_language}. "
+        "Preserve meaning, tone and names. Do not add explanations or speaker labels. "
+        "Return JSON only: {\\"translation\\": \\"translated dialogue\\"}."
+    )
+    payload = (text or "")[:5500]
+    try:
+        response = _ask(C.LLM_MODEL, prompt, payload)
+    except Exception:
+        response = _ask(C.LLM_FALLBACK_MODEL, prompt, payload)
+    result = json.loads(response.choices[0].message.content)
+    translated = str(result.get("translation", "")).strip()
+    if not translated:
+        raise RuntimeError("The translation model returned empty voiceover text")
+    return translated
 
 
 def summarize_transcript(segments) -> str:

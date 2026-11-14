@@ -6,3 +6,6 @@ python-dotenv>=1.0.0
 opencv-python-headless>=4.9,<5
 Pillow>=10.1
 numpy
+
+# Optional free speech synthesis for translated voiceovers
+edge-tts>=6.1.12
