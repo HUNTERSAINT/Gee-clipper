@@ -536,7 +536,11 @@ def make_clip(
             else:
                 track = M.pick(music_mood, energy, used_tracks)
         except Exception:
-            log.exception("Music selection failed; continuing without music")
+            log.exception("Custom soundtrack failed; falling back to the free music library")
+            try:
+                track = M.pick(music_mood, energy, used_tracks)
+            except Exception:
+                log.exception("Built-in music selection failed; continuing without music")
     try:
         V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=track, logo_path=opts.logo_path)
     except RuntimeError:
