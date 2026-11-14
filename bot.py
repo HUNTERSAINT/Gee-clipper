@@ -299,7 +299,7 @@ async def clearlogo_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def formats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     value = ctx.args[0].lower() if ctx.args else ""
     if value not in ("all", "vertical"):
-        await update.message.reply_text("Usage: /formats all or /formats vertical\\nall creates 9:16, 1:1 and 16:9 versions.")
+        await update.message.reply_text("Usage: /formats all or /formats vertical\nall creates 9:16, 1:1 and 16:9 versions.")
         return
     o = get_opts(ctx)
     o.export_formats = value
@@ -326,12 +326,12 @@ async def stats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     today_count = sum(n for day, n in usage.values() if day == today)
     users = data.get("total_users", set())
     await update.message.reply_text(
-        "📊 Gee Clipper admin dashboard\\n"
-        f"Total jobs: {data.get('total_jobs', 0)}\\n"
-        f"Unique users seen: {len(users)}\\n"
-        f"Today's accepted jobs: {today_count}\\n"
-        f"Active jobs: {sum(1 for j in JOB_STATES.values() if j.get('status') == 'processing')}\\n"
-        f"Queued jobs: {sum(1 for j in JOB_STATES.values() if j.get('status') == 'queued')}\\n"
+        "📊 Gee Clipper admin dashboard\n"
+        f"Total jobs: {data.get('total_jobs', 0)}\n"
+        f"Unique users seen: {len(users)}\n"
+        f"Today's accepted jobs: {today_count}\n"
+        f"Active jobs: {sum(1 for j in JOB_STATES.values() if j.get('status') == 'processing')}\n"
+        f"Queued jobs: {sum(1 for j in JOB_STATES.values() if j.get('status') == 'queued')}\n"
         f"Blocked users: {len(data.get('blocked_users', set()))}"
     )
 
