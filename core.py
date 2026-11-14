@@ -179,12 +179,12 @@ def split_audio(src: str, workdir: str, chunk_sec: int = 900) -> list[Path]:
 def _fallback_word_timestamps(segment: dict) -> list[dict]:
     """Build approximate word cues only when the provider omits word timestamps."""
     text = str(segment.get("text") or "").strip()
-    tokens = re.findall(r"\\S+", text)
+    tokens = re.findall(r"\S+", text)
     start, end = float(segment.get("start") or 0), float(segment.get("end") or 0)
     if not tokens or end <= start:
         return []
     # Allocate time by token length so long words do not flash as quickly as short ones.
-    weights = [max(1, len(re.sub(r"\\W", "", token))) for token in tokens]
+    weights = [max(1, len(re.sub(r"\W", "", token))) for token in tokens]
     total = sum(weights)
     cursor, output = start, []
     for token, weight in zip(tokens, weights):
