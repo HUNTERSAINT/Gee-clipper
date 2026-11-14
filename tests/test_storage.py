@@ -2,14 +2,13 @@ import os
 import tempfile
 import unittest
 from unittest.mock import patch
-import config
 import storage
 
 
 class StorageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.patch = patch.object(config, "DB_PATH", os.path.join(self.temp.name, "gee.db"))
+        self.patch = patch.object(storage, "DB_PATH", os.path.join(self.temp.name, "gee.db"))
         self.patch.start()
         storage.init()
 

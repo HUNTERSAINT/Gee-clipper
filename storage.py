@@ -4,12 +4,12 @@ import os
 import sqlite3
 import uuid
 from datetime import date, datetime, timezone
-import config as C
+DB_PATH = os.path.abspath(os.getenv('GEE_DB_PATH', os.path.join(os.getenv('DATA_DIR', 'data'), 'gee_clipper.sqlite3')))
 
 
 def _connect():
-    os.makedirs(os.path.dirname(C.DB_PATH) or ".", exist_ok=True)
-    db = sqlite3.connect(C.DB_PATH, timeout=30)
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    db = sqlite3.connect(DB_PATH, timeout=30)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA busy_timeout=30000")
     db.execute("PRAGMA foreign_keys=ON")
