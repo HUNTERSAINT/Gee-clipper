@@ -1,5 +1,6 @@
 """The brain: download, transcribe, pick the best moments, build each clip."""
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -248,7 +249,7 @@ def transcribe(chunks: list[Path], chunk_sec: int = 600):
             context_parts.append(" ".join(s["text"] for s in segments[-3:] if s["text"])[-450:])
         context = "\n".join(x for x in context_parts if x).strip()
         if context:
-            request["prompt"] = context[:900]
+            request["prompt"] = context[:700]
 
         resp = with_retry(lambda: groq.audio.transcriptions.create(**request))
         lang = lang or _get(resp, "language")
