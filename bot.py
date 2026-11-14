@@ -180,11 +180,11 @@ async def settings_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def preset_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = ctx.args[0].lower() if ctx.args else ""
     presets = {
-        "viral": dict(clips=6, layout="auto", captions=True, hook=True, music=True, grade=True),
-        "podcast": dict(clips=4, layout="auto", captions=True, hook=False, music=False, grade=True),
-        "educational": dict(clips=4, layout="auto", captions=True, hook=True, music=False, grade=True),
-        "cinematic": dict(clips=3, layout="blur", captions=True, hook=True, music=True, grade=True),
-        "clean": dict(clips=3, layout="auto", captions=False, hook=False, music=False, grade=True),
+        "viral": dict(clips=6, layout="auto", captions=True, hook=True, music=True, grade=True, caption_style="bold"),
+        "podcast": dict(clips=4, layout="auto", captions=True, hook=False, music=False, grade=True, caption_style="classic"),
+        "educational": dict(clips=4, layout="auto", captions=True, hook=True, music=False, grade=True, caption_style="minimal"),
+        "cinematic": dict(clips=3, layout="blur", captions=True, hook=True, music=True, grade=True, caption_style="classic"),
+        "clean": dict(clips=3, layout="auto", captions=False, hook=False, music=False, grade=True, caption_style="minimal"),
     }
     if name not in presets:
         await update.message.reply_text("Choose: viral, podcast, educational, cinematic, clean. Example: /preset viral")
