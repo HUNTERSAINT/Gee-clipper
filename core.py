@@ -59,6 +59,7 @@ class Opts:
     logo_path: str = ""
     subtitle_language: str = "off"
     outro_text: str = "Follow for more"
+    music_path: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -528,7 +529,12 @@ def make_clip(
     track = None
     if opts.music:
         try:
-            track = M.pick(music_mood, energy, used_tracks)
+            if opts.music_path and os.path.isfile(opts.music_path):
+                custom_features = M.analyse_audio(M._decode(opts.music_path))
+                track = (opts.music_path, "user-upload", custom_features)
+                log.info("Using user-uploaded soundtrack")
+            else:
+                track = M.pick(music_mood, energy, used_tracks)
         except Exception:
             log.exception("Music selection failed; continuing without music")
     try:
