@@ -158,6 +158,27 @@ AI show notes and chapter suggestions, and /titles generates alternative hooks a
 These are on-demand Groq requests and use your configured model quota.
 
 
+## Creator tools: commentary, layouts, B-roll, metadata, timeline
+
+These make a clip clearly your own edit rather than a straight repost. Every optional layer degrades
+gracefully: a missing API key, failed download or LLM error just skips that layer and the clip still renders.
+
+| Feature | How to use it |
+|---|---|
+| **Commentary + ducking** | `/commentary <script>` (free TTS) or send a voice message. It plays at the start of each clip and the source audio ducks to 15%, rising smoothly afterwards. `/clearcommentary` removes it. |
+| **Commentary frame** | `/layout frame`: blurred backdrop, framed clip and a persistent title card with the clip's hook. |
+| **Split screen** | Send a video with the caption `facecam`, then `/layout split`: source on the top 65%, you on the bottom 35%. The face-cam starts with each clip and loops if shorter. `/clearfacecam` removes it. |
+| **Two-speaker stack** | `/layout auto` (or `stack`) stacks both people when two faces are on screen for a good part of the clip; otherwise it follows one face. |
+| **B-roll** | Set `PEXELS_API_KEY` (free) or `BROLL_DIR`. The LLM picks keywords with timestamps; 2.5-3.5 s cutaways fade in over the upper frame, at least 4 s apart. `/broll on\|off`. |
+| **Metadata** | `/metadata on\|off` (default on): `metadata.json` with 3 YouTube titles under 50 characters, per-platform descriptions and hashtags, and a 2-sentence hook script. |
+| **Timeline export** | `/timeline on`: a zip with an FCPXML project (source cut, B-roll lane), the captions as `.srt` and the rendered preview, for DaVinci Resolve or Final Cut. |
+
+Captions, title cards and the logo stay out of the platform UI zones (bottom ~250 px and right ~140 px of a
+1080x1920 frame, scaled for the 720x1280 output).
+
+Notes: output is 720x1280 to keep renders fast and files under Telegram's 50 MB limit. Speaker framing follows
+faces, not voices: the bot does not tell who is talking. Only use footage you have the rights to.
+
 ## Translated voiceovers
 
 Use /voiceover Spanish (or French, German, Portuguese, Italian, Hindi, Arabic, Japanese,

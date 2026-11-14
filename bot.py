@@ -21,6 +21,7 @@ from telegram.ext import (
 )
 
 import config as C
+import broll as BR
 import core
 import storage as S
 import yt_dlp
@@ -49,7 +50,12 @@ HELP = (
     "Add a number to choose how many: https://youtu.be/xxxx 5\n\n"
     "Settings:\n"
     "/clips 3 - how many clips\n"
-    "/layout auto|crop|blur - auto follows the speaker's face\n"
+    "/layout auto|crop|blur|frame|split|stack - auto follows the speaker's face (or stacks two speakers). frame = blurred backdrop + title card, split = source over your face-cam\n"
+    "/broll on|off - stock cutaways on keywords (needs PEXELS_API_KEY)\n"
+    "/metadata on|off - metadata.json with titles and hashtags for YouTube, Facebook, Instagram, TikTok\n"
+    "/timeline on|off - editable FCPXML timeline pack for DaVinci Resolve / Final Cut\n"
+    "/commentary <script> - your own spoken intro (free TTS); or send a voice message. The video's audio ducks to 15% while it plays. /clearcommentary removes it\n"
+    "Face-cam for /layout split: send a video with the caption facecam. /clearfacecam removes it\n"
     "/captions on|off\n"
     "/hook on|off - title banner at the start\n"
     "/music on|off - background music matched to each clip\n"
@@ -99,6 +105,11 @@ def summary(o: core.Opts) -> str:
         + f"\nSilence removal: {'on' if o.remove_silence else 'off'}"
         + f"\nOutro: {o.outro_text or 'off'}"
         + f"\nCustom soundtrack: {'uploaded' if o.music_path else 'automatic library'}"
+        + f"\nB-roll: {'on' if o.broll else 'off'}{'' if BR.available() else ' (no PEXELS_API_KEY)'}"
+        + f"\nMetadata file: {'on' if o.metadata else 'off'}"
+        + f"\nTimeline export: {'on' if o.export_timeline else 'off'}"
+        + f"\nCommentary: {'recording' if o.commentary_path else ('script' if o.commentary_text else 'off')}"
+        + f"\nFace-cam: {'uploaded' if o.facecam_path else 'none'}"
     )
 
 
@@ -190,7 +201,7 @@ async def settings_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     action, value = q.data.split(":", 1)
     if action == "toggle" and value in ("captions", "hook", "music", "grade"):
         setattr(o, value, not getattr(o, value))
-    elif action == "layout" and value in ("auto", "crop", "blur"):
+    elif action == "layout" and value in ("auto", "crop", "blur", "frame", "split", "stack"):
         o.layout = value
     elif action == "clips" and value.isdigit():
         o.clips = max(1, min(int(value), C.MAX_CLIPS))
@@ -352,6 +363,88 @@ async def clearmusic_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except OSError:
             pass
     await update.message.reply_text("Custom soundtrack removed. Automatic mood-matched music is enabled.")
+
+
+def _asset_path(update, kind: str, ext: str) -> str:
+    folder = os.path.join(C.CACHE_DIR, "user-assets")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, f"{kind}_{update.effective_user.id}.{ext}")
+
+
+async def commentary_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    o = get_opts(ctx)
+    text = " ".join(ctx.args).strip()
+    if not text:
+        await update.message.reply_text(
+            "Usage: /commentary <what you want said at the start>\n"
+            "Or send a voice message / audio recording. Use /clearcommentary to remove it.")
+        return
+    o.commentary_text = text[:600]
+    await update.message.reply_text("🎙 Commentary script saved. It is spoken over the start of each clip and the original audio ducks to 15% while it plays.")
+
+
+async def commentary_upload(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update, ctx):
+        return
+    media = update.message.voice
+    if not media or (media.file_size and media.file_size > 19 * 1024 * 1024):
+        return
+    path = _asset_path(update, "commentary", "ogg")
+    try:
+        await (await media.get_file()).download_to_drive(custom_path=path)
+        o = get_opts(ctx)
+        o.commentary_path = path
+        await update.message.reply_text("🎙 Voice commentary saved. It plays at the start of each clip while the source audio ducks to 15%. /clearcommentary removes it.")
+    except Exception:
+        log.exception("commentary upload failed")
+        await update.message.reply_text("I couldn't save that recording. Please try again.")
+
+
+async def clearcommentary_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    o = get_opts(ctx)
+    for p in (o.commentary_path,):
+        if p:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    o.commentary_path, o.commentary_text = "", ""
+    await update.message.reply_text("Commentary removed.")
+
+
+async def facecam_upload(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update, ctx):
+        return
+    msg = update.message
+    if not (msg.caption or "").strip().lower().startswith("facecam"):
+        return
+    media = msg.video or msg.document
+    if not media or (media.file_size and media.file_size > 19 * 1024 * 1024):
+        await msg.reply_text("Please send a face-cam video under 19 MB with the caption: facecam")
+        return
+    path = _asset_path(update, "facecam", "mp4")
+    try:
+        await (await media.get_file()).download_to_drive(custom_path=path)
+        o = get_opts(ctx)
+        o.facecam_path = path
+        o.layout = "split"
+        await msg.reply_text("🎥 Face-cam saved and layout set to split (source on top, you below). It starts with the clip and loops if shorter. /clearfacecam removes it.")
+    except Exception:
+        log.exception("facecam upload failed")
+        await msg.reply_text("I couldn't save that video. Please try again.")
+
+
+async def clearfacecam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    o = get_opts(ctx)
+    if o.facecam_path:
+        try:
+            os.remove(o.facecam_path)
+        except OSError:
+            pass
+    o.facecam_path = ""
+    if o.layout == "split":
+        o.layout = "auto"
+    await update.message.reply_text("Face-cam removed.")
 
 
 async def clearlogo_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -672,14 +765,18 @@ async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
     elif cmd == "clips" and arg.isdigit():
         o.clips = max(1, min(int(arg), C.MAX_CLIPS))
-    elif cmd == "layout" and arg in ("auto", "crop", "blur"):
+    elif cmd == "layout" and arg in ("auto", "crop", "blur", "frame", "split", "stack"):
         o.layout = arg
-    elif cmd in ("captions", "hook", "music", "grade") and arg in ("on", "off"):
+    elif cmd in ("captions", "hook", "music", "grade", "broll", "metadata", "timeline") and arg in ("on", "off"):
+        cmd = "export_timeline" if cmd == "timeline" else cmd
         setattr(o, cmd, arg == "on")
     else:
         usage = {
             "clips": f"/clips 1-{C.MAX_CLIPS}",
-            "layout": "/layout auto|crop|blur",
+            "layout": "/layout auto|crop|blur|frame|split|stack",
+            "broll": "/broll on|off",
+            "metadata": "/metadata on|off",
+            "timeline": "/timeline on|off",
             "captions": "/captions on|off",
             "hook": "/hook on|off",
             "music": "/music on|off",
@@ -876,6 +973,14 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                             await msg.reply_document(subtitle_file, filename=f"gee-clipper-{i}.srt", caption="📝 Subtitles (SRT)")
                     except Exception:
                         log.exception("subtitle file send failed")
+                for key, label in (("metadata", "🧾 metadata.json: titles, hashtags per platform, hook script"),
+                                   ("timeline", "🎞 Editable timeline (FCPXML + media + captions)")):
+                    if res.get(key) and os.path.isfile(res[key]):
+                        try:
+                            with open(res[key], "rb") as fh:
+                                await msg.reply_document(fh, filename=f"gee-clipper-{i}-{os.path.basename(res[key]).split('_', 2)[-1]}", caption=label)
+                        except Exception:
+                            log.exception("%s file send failed", key)
                 try:
                     await msg.reply_text(build_caption_pack(clip))
                 except Exception:
@@ -933,7 +1038,9 @@ async def post_init(app: Application):
             BotCommand("start", "How to use"),
             BotCommand("settings", "Show settings"),
             BotCommand("clips", "Number of clips"),
-            BotCommand("layout", "auto | crop | blur"),
+            BotCommand("layout", "auto|crop|blur|frame|split|stack"),
+            BotCommand("commentary", "Your spoken intro (ducks source audio)"),
+            BotCommand("timeline", "on | off: editable FCPXML pack"),
             BotCommand("captions", "on | off"),
             BotCommand("hook", "on | off"),
             BotCommand("music", "on | off"),
@@ -1021,6 +1128,11 @@ def main():
     app.add_handler(CallbackQueryHandler(favorite_callback, pattern=r"^fav:"))
     app.add_handler(CommandHandler("watermark", watermark_cmd))
     app.add_handler(CommandHandler("clearlogo", clearlogo_cmd))
+    app.add_handler(CommandHandler("commentary", commentary_cmd))
+    app.add_handler(CommandHandler("clearcommentary", clearcommentary_cmd))
+    app.add_handler(CommandHandler("clearfacecam", clearfacecam_cmd))
+    app.add_handler(MessageHandler(filters.VOICE, commentary_upload))
+    app.add_handler(MessageHandler((filters.VIDEO | filters.Document.VIDEO) & filters.CaptionRegex(r"(?i)^facecam"), facecam_upload))
     app.add_handler(CommandHandler("clearmusic", clearmusic_cmd))
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, music_upload))
     app.add_handler(MessageHandler(filters.PHOTO, logo_upload))
@@ -1034,7 +1146,7 @@ def main():
     app.add_handler(CommandHandler("block", block_cmd))
     app.add_handler(CommandHandler("unblock", unblock_cmd))
     app.add_handler(
-        CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade"], settings_cmd)
+        CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade", "broll", "metadata", "timeline"], settings_cmd)
     )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
     webhook_base = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")

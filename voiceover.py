@@ -57,3 +57,13 @@ def generate(text: str, language: str, workdir: str, index: int, duration: float
         capture_output=True, text=True, check=True, timeout=90,
     )
     return target
+
+
+def speak(text: str, language: str, workdir: str, name: str, max_chars: int = 600) -> str:
+    """Creator commentary from a script, spoken naturally (no stretching to the clip length)."""
+    text = " ".join((text or "").split())[:max_chars]
+    if not text:
+        raise ValueError("Empty commentary script")
+    target = os.path.join(workdir, name + ".mp3")
+    asyncio.run(_synthesize(text, voice_for_language(language), target))
+    return target

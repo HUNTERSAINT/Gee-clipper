@@ -368,7 +368,7 @@ def render_social_variants(source: str, workdir: str, idx: int, formats=("square
 
 
 def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
-              captions=True, watermark=None, caption_style="bold"):
+              captions=True, watermark=None, caption_style="bold", banner=None):
     header = (
         "[Script Info]\nScriptType: v4.00+\n"
         f"PlayResX: {OUT_W}\nPlayResY: {OUT_H}\nWrapStyle: 0\n\n"
@@ -377,17 +377,22 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
         "BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,"
         "BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n"
         f"Style: Default,Liberation Sans,{({'bold': 64, 'classic': 54, 'neon': 60, 'minimal': 44}.get(caption_style, 64))},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
-        f"1,0,0,0,100,100,0,0,1,{({'bold': 6, 'classic': 4, 'neon': 5, 'minimal': 2}.get(caption_style, 6))},1,2,40,40,340,1\n"
+        f"1,0,0,0,100,100,0,0,1,{({'bold': 6, 'classic': 4, 'neon': 5, 'minimal': 2}.get(caption_style, 6))},1,2,93,93,340,1\n"
         "Style: Hook,Liberation Sans,50,&H00FFFFFF,&H000000FF,&H40000000,&H64000000,"
-        "1,0,0,0,100,100,0,0,3,14,0,8,50,50,150,1\n"
+        "1,0,0,0,100,100,0,0,3,14,0,8,93,93,150,1\n"
+        "Style: Header,Liberation Sans,38,&H00FFFFFF,&H000000FF,&HB0000000,&H64000000,"
+        "1,0,0,0,100,100,0,0,3,16,0,8,150,93,100,1\n"
         "Style: Watermark,Liberation Sans,24,&H80FFFFFF,&H000000FF,&H80000000,&H00000000,"
-        "1,0,0,0,100,100,0,0,1,2,1,9,35,35,35,1\n\n"
+        "1,0,0,0,100,100,0,0,1,2,1,7,35,35,35,1\n\n"
         "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
     )
     lines = []
     if watermark:
         wm = _ass_text(str(watermark)[:40])
         lines.append(f"Dialogue: 2,{ass_time(0)},{ass_time(clip_end - clip_start)},Watermark,,0,0,0,,{wm}")
+    if banner:
+        head = r"\N".join(textwrap.wrap(_ass_text(banner), 22)[:2])
+        lines.append(f"Dialogue: 1,{ass_time(0)},{ass_time(clip_end - clip_start)},Header,,0,0,0,,{head}")
     if hook:
         wrapped = r"\N".join(textwrap.wrap(_ass_text(hook), 20)[:3])
         lines.append(
@@ -427,64 +432,95 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
 # --------------------------------------------------------------------------- #
 def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
            crf: int = 24, grade_vf: str | None = None, music=None,
-           logo_path: str | None = None, voiceover_path: str | None = None) -> None:
+           logo_path: str | None = None, voiceover_path: str | None = None,
+           broll: list | None = None, commentary_path: str | None = None,
+           facecam_path: str | None = None) -> None:
     grade = ("," + grade_vf) if grade_vf else ""
-    ass = f",ass={ass_name}" if ass_name else ""
     kind = plan["kind"]
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
+    n_in = 1
+
+    def add_input(*args):
+        nonlocal n_in
+        cmd.extend(args)
+        n_in += 1
+        return n_in - 1
+
+    music_input = voiceover_input = commentary_input = facecam_input = None
+    if music:
+        import music as M
+        music_path, music_slug, mfeat = music
+        music_input = add_input("-stream_loop", "-1", "-i", music_path)  # always input 1
+        log.info("Clip soundtrack track=%s", music_slug)
+    if voiceover_path and os.path.isfile(voiceover_path):
+        voiceover_input = add_input("-i", voiceover_path)
+    if commentary_path and os.path.isfile(commentary_path):
+        commentary_input = add_input("-i", commentary_path)
+    if kind == "split" and facecam_path and os.path.isfile(facecam_path):
+        facecam_input = add_input("-stream_loop", "-1", "-i", facecam_path)
+    elif kind == "split":
+        kind = plan["kind"] = "frame"  # no face-cam supplied: fall back to the framed preset
+
+    # ---- picture: base layout -> [vbase] ------------------------------------
     if kind == "crop":
-        vf = (
-            f"crop=w={plan['cw']}:h=ih:x='{x_expr(plan['keys'])}':y=0,"
-            f"scale={OUT_W}:{OUT_H},setsar=1{grade}{ass}"
+        video_graph = (
+            f"[0:v]crop=w={plan['cw']}:h=ih:x='{x_expr(plan['keys'])}':y=0,"
+            f"scale={OUT_W}:{OUT_H},setsar=1{grade}[vbase]"
         )
-        video_graph = f"[0:v]{vf}[vout]"
     elif kind == "center":
-        vf = (
-            "crop=w='trunc(ih*9/16/2)*2':h=ih,"
-            f"scale={OUT_W}:{OUT_H},setsar=1{grade}{ass}"
+        video_graph = (
+            "[0:v]crop=w='trunc(ih*9/16/2)*2':h=ih,"
+            f"scale={OUT_W}:{OUT_H},setsar=1{grade}[vbase]"
         )
-        video_graph = f"[0:v]{vf}[vout]"
     elif kind == "fill":
-        vf = (
-            f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
-            f"crop={OUT_W}:{OUT_H},setsar=1{grade}{ass}"
+        video_graph = (
+            f"[0:v]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_W}:{OUT_H},setsar=1{grade}[vbase]"
         )
-        video_graph = f"[0:v]{vf}[vout]"
+    elif kind in ("frame", "split", "stack"):
+        import layouts
+        video_graph = layouts.graph(kind, plan, grade, facecam_input)
     else:
         video_graph = (
             "[0:v]split[a][b];"
             f"[a]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
             f"crop={OUT_W}:{OUT_H},boxblur=25:6,eq=brightness=-0.12[bg];"
             f"[b]scale={OUT_W}:-2[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1{grade}"
-            f"{ass}[vout]"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1{grade}[vbase]"
         )
 
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
-    music_input = None
-    voiceover_input = None
-    next_input = 1
-    if music:
-        import music as M
-        music_path, music_slug, mfeat = music
-        music_input = next_input
-        cmd += ["-stream_loop", "-1", "-i", music_path]
-        next_input += 1
-        log.info("Clip soundtrack track=%s", music_slug)
-    if voiceover_path and os.path.isfile(voiceover_path):
-        voiceover_input = next_input
-        cmd += ["-i", voiceover_path]
-        next_input += 1
-    if logo_path and os.path.isfile(logo_path):
-        logo_input = next_input
-        cmd += ["-i", logo_path]
+    # ---- B-roll cutaways above the speaker, under captions ------------------
+    label = "[vbase]"
+    for i, b in enumerate([b for b in (broll or []) if os.path.isfile(b.get("path", ""))]):
+        bi = add_input("-i", b["path"])
+        s0, e0 = b["t"], b["t"] + b["d"]
         video_graph += (
-            f";[{logo_input}:v]scale=150:-1,format=rgba[brandlogo];"
-            "[vout][brandlogo]overlay=W-w-24:H-h-24[vbranded]"
+            f";[{bi}:v]scale={OUT_W - 120}:{int((OUT_W - 120) * 0.62) // 2 * 2}:"
+            "force_original_aspect_ratio=increase,"
+            f"crop={OUT_W - 120}:{int((OUT_W - 120) * 0.62) // 2 * 2},setsar=1,fps=30,"
+            f"trim=duration={b['d']:.2f},setpts=PTS-STARTPTS+{s0:.2f}/TB,format=yuva420p,"
+            f"fade=t=in:st={s0:.2f}:d=0.3:alpha=1,fade=t=out:st={e0 - 0.3:.2f}:d=0.3:alpha=1[br{i}];"
+            f"{label}[br{i}]overlay=x=(W-w)/2:y={270 if kind == "frame" else 190}:eof_action=pass:"
+            f"enable='between(t,{s0:.2f},{e0:.2f})'[vb{i}]"
         )
-        video_label = "[vbranded]"
-    else:
-        video_label = "[vout]"
+        label = f"[vb{i}]"
 
+    # ---- captions / header ---------------------------------------------------
+    if ass_name:
+        video_graph += f";{label}ass={ass_name}[vcap]"
+        label = "[vcap]"
+
+    # ---- logo (top-left: bottom and right edges are covered by platform UI) --
+    if logo_path and os.path.isfile(logo_path):
+        logo_input = add_input("-i", logo_path)
+        video_graph += (
+            f";[{logo_input}:v]scale=110:-1,format=rgba[brandlogo];"
+            f"{label}[brandlogo]overlay=30:100[vbranded]"
+        )
+        label = "[vbranded]"
+    video_label = label
+
+    # ---- audio ---------------------------------------------------------------
     audio_probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
          "-show_entries", "stream=codec_type", "-of", "csv=p=0", raw],
@@ -492,25 +528,42 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
     )
     has_audio = audio_probe.returncode == 0 and bool(audio_probe.stdout.strip())
     dur = probe(raw)["dur"]
+    base = f"[{voiceover_input}:a:0]" if voiceover_input is not None else ("[0:a:0]" if has_audio else None)
+    pre, voice_ref = "", base
+    if commentary_input is not None:
+        cm = (f"[{commentary_input}:a:0]aresample=48000,highpass=f=90,afftdn=nf=-30,"
+              "loudnorm=I=-16:TP=-2:LRA=9")
+        if base:
+            # While the creator speaks the source drops to ~15% and rises again smoothly.
+            pre = (f"{base}aresample=48000[src0];{cm},asplit=2[cm][cmsc0];"
+                   "[cmsc0]apad[cmsc];"
+                   "[src0][cmsc]sidechaincompress=threshold=0.038:ratio=20:attack=20:release=450:"
+                   "makeup=1[srcduck];"
+                   "[srcduck][cm]amix=inputs=2:duration=first:dropout_transition=0:weights='1 1',"
+                   "volume=2[voicebus]")
+        else:
+            pre = f"{cm}[voicebus]"
+        voice_ref = "[voicebus]"
     if music:
-        voice_present = bool(voiceover_input is not None or has_audio)
-        audio_graph = M.mix_filter(voice_present, mfeat, dur)
-        if voiceover_input is not None:
-            audio_graph = audio_graph.replace("[0:a:0]", f"[{voiceover_input}:a:0]")
-        graph = video_graph + ";" + audio_graph
+        audio_graph = M.mix_filter(bool(voice_ref), mfeat, dur)
+        if voice_ref:
+            audio_graph = audio_graph.replace("[0:a:0]", voice_ref, 1)
+        graph = video_graph + ";" + (pre + ";" if pre else "") + audio_graph
         maps = ["-map", video_label, "-map", "[aout]", "-t", f"{dur:.2f}"]
-        log.info("Clip soundtrack track=%s voice_present=%s voiceover=%s",
-                 music_slug, voice_present, bool(voiceover_input is not None))
-    elif voiceover_input is not None:
+        log.info("Clip soundtrack track=%s voice_present=%s voiceover=%s commentary=%s",
+                 music_slug, bool(voice_ref), voiceover_input is not None, commentary_input is not None)
+    elif voice_ref and (voiceover_input is not None or commentary_input is not None):
         graph = (
-            video_graph + ";"
-            f"[{voiceover_input}:a:0]aresample=48000,loudnorm=I=-16:TP=-2:LRA=9,"
+            video_graph + ";" + (pre + ";" if pre else "")
+            + f"{voice_ref}aresample=48000,loudnorm=I=-16:TP=-2:LRA=9,"
             f"apad,atrim=duration={dur:.2f},alimiter=limit=0.95[aout]"
         )
         maps = ["-map", video_label, "-map", "[aout]", "-t", f"{dur:.2f}"]
     else:
         graph = video_graph
         maps = ["-map", video_label] + (["-map", "0:a:0"] if has_audio else [])
+    if "-t" not in maps:
+        maps += ["-t", f"{dur:.2f}"]  # looped inputs (face-cam, music) must not run forever
     cmd += ["-filter_complex", graph] + maps + [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", out,

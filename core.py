@@ -13,7 +13,11 @@ import yt_dlp
 from groq import Groq, RateLimitError
 
 import config as C
+import broll as BR
 import grade as G
+import layouts as L
+import metadata as MD
+import timeline as TL
 import music as M
 import video as V
 import voiceover as VO
@@ -67,7 +71,12 @@ class Opts:
     voiceover_language: str = "off"
     subtitle_language: str = "off"
     outro_text: str = "Follow for more"
-    music_path: str = ""
+    broll: bool = True              # only used when PEXELS_API_KEY or BROLL_DIR is set
+    metadata: bool = True           # metadata.json per clip
+    export_timeline: bool = False   # FCPXML package per clip
+    commentary_path: str = ""       # creator voiceover recording (opening)
+    commentary_text: str = ""       # or a script spoken with free TTS
+    facecam_path: str = ""          # creator face-cam for the split-screen layout
 
 
 # --------------------------------------------------------------------------- #
@@ -415,6 +424,17 @@ def build_windows(segments, heat_fn=None, window_sec: int = 600):
     return windows
 
 
+def llm_json(prompt: str, text: str) -> dict:
+    """JSON answer from the main model, falling back to the backup model."""
+    try:
+        response = _ask(C.LLM_MODEL, prompt, text)
+    except Exception:
+        if not C.LLM_FALLBACK_MODEL:
+            raise
+        response = _ask(C.LLM_FALLBACK_MODEL, prompt, text)
+    return json.loads(response.choices[0].message.content)
+
+
 def _ask(model: str, prompt: str, text: str):
     """Make one bounded request; model fallback is handled by pick_clips."""
     return groq.chat.completions.create(
@@ -655,16 +675,31 @@ def make_clip(
     hook_text = clip.get("hook") or clip["title"]
 
     ass_name = None
-    if opts.captions or opts.hook or opts.watermark:
+    if opts.captions or opts.hook or opts.watermark or opts.layout == "frame":
         ass_name = f"cap_{idx}.ass"
         V.build_ass(
             clip_words, clip["start"], clip["end"], os.path.join(workdir, ass_name),
-            hook=hook_text if opts.hook else None, captions=opts.captions,
+            hook=hook_text if (opts.hook and opts.layout != "frame") else None, captions=opts.captions,
             watermark=opts.watermark, caption_style=opts.caption_style,
+            banner=hook_text if opts.layout == "frame" else None,
         )
 
     log.info("Clip %s stage=layout starting", idx)
-    plan = V.plan_layout(raw, meta, opts.layout)
+    plan = None
+    wide = meta["w"] / meta["h"] > 9 / 16 + 0.02
+    if opts.layout == "frame":
+        plan = {"kind": "frame"}
+    elif opts.layout == "split":
+        plan = {"kind": "split", "cx": L.face_center(raw)}
+    elif wide and opts.layout in ("auto", "stack"):
+        try:
+            two = L.two_faces(raw)
+            if two:
+                plan = {"kind": "stack", "left": two[0], "right": two[1]}
+        except Exception:
+            log.exception("Two-speaker detection failed")
+    if plan is None:
+        plan = V.plan_layout(raw, meta, "auto" if opts.layout == "stack" else opts.layout)
     log.info("Clip %s stage=layout success kind=%s", idx, plan["kind"])
     out = os.path.join(workdir, f"clip_{idx}.mp4")
     report(f"Rendering vertical video for clip {idx}...")
@@ -688,6 +723,21 @@ def make_clip(
         except Exception:
             log.exception("Voiceover generation failed; preserving original spoken audio")
             voiceover_path = None
+    commentary_path = None
+    if opts.commentary_path and os.path.isfile(opts.commentary_path):
+        commentary_path = opts.commentary_path
+    elif opts.commentary_text.strip():
+        try:
+            commentary_path = VO.speak(opts.commentary_text, "english", workdir, f"commentary_{idx}")
+        except Exception:
+            log.exception("Commentary text-to-speech failed; rendering without it")
+    broll = []
+    if opts.broll and BR.available():
+        report(f"Finding B-roll for clip {idx}...")
+        rel = [dict(w, start=w["start"] - clip["start"], end=w["end"] - clip["start"])
+               for w in clip_words if clip["start"] - 0.05 <= w["start"] <= clip["end"] + 0.3]
+        broll = BR.build(rel, V.probe(raw)["dur"], workdir, idx, llm_json)
+    extras = dict(broll=broll, commentary_path=commentary_path, facecam_path=opts.facecam_path or None)
     grade_vf = None
     if opts.grade:
         try:
@@ -711,21 +761,21 @@ def make_clip(
             except Exception:
                 log.exception("Built-in music selection failed; continuing without music")
     try:
-        V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=track, logo_path=opts.logo_path, voiceover_path=voiceover_path)
+        V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=track, logo_path=opts.logo_path, voiceover_path=voiceover_path, **extras)
     except RuntimeError:
         if not track:
             raise
         log.exception("Render with music failed; retrying without music")
         track = None
         try:
-            V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=None, logo_path=opts.logo_path, voiceover_path=voiceover_path)
+            V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=None, logo_path=opts.logo_path, voiceover_path=voiceover_path, **extras)
         except RuntimeError:
             log.exception("Render with grade failed; retrying plain")
             grade_vf = None
-            V.render(raw, plan, ass_name, out, workdir, grade_vf=None, music=None, logo_path=opts.logo_path, voiceover_path=voiceover_path)
+            V.render(raw, plan, ass_name, out, workdir, grade_vf=None, music=None, logo_path=opts.logo_path, voiceover_path=voiceover_path, **extras)
     log.info("Clip %s stage=render success bytes=%s", idx, os.path.getsize(out))
     if os.path.getsize(out) > C.TG_FILE_LIMIT:
-        V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track, logo_path=opts.logo_path)
+        V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track, logo_path=opts.logo_path, voiceover_path=voiceover_path, **extras)
     if opts.outro_text:
         try:
             out = V.append_outro(out, workdir, idx, opts.outro_text)
@@ -761,6 +811,19 @@ def make_clip(
         log.info("Clip %s stage=thumbnails success", idx)
     except Exception:
         log.exception("thumbnail generation failed")
+    if opts.metadata:
+        try:
+            result["metadata"] = MD.write(
+                MD.generate(clip, spoken_text, llm_json), os.path.join(workdir, f"clip_{idx}_metadata.json"))
+        except Exception:
+            log.exception("metadata.json failed")
+    if opts.export_timeline:
+        try:
+            result["timeline"] = TL.build(
+                workdir, idx, raw, out, result.get("subtitles"), broll,
+                V.probe(raw)["dur"], meta["w"], meta["h"], C.TG_FILE_LIMIT)
+        except Exception:
+            log.exception("Timeline export failed")
     log.info("Clip %s stage=complete", idx)
     return result
 
