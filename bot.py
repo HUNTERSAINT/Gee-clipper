@@ -88,6 +88,7 @@ def summary(o: core.Opts) -> str:
         + f"\nWatermark: {o.watermark or 'off'}"
         + f"\nExports: {o.export_formats}"
         + f"\nSilence removal: {'on' if o.remove_silence else 'off'}"
+        + f"\nOutro: {o.outro_text or 'off'}"
     )
 
 
@@ -231,6 +232,16 @@ async def cancel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     event.set()
     await update.message.reply_text("Cancellation requested. Gee Clipper will stop after the current download/render step.")
+
+
+async def outro_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(ctx.args).strip()
+    if not text:
+        await update.message.reply_text("Usage: /outro Follow for more or /outro off")
+        return
+    o = get_opts(ctx)
+    o.outro_text = "" if text.lower() == "off" else text[:80]
+    await update.message.reply_text(f"Outro: {o.outro_text or 'off'}")
 
 
 async def translate_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -657,6 +668,7 @@ async def post_init(app: Application):
             BotCommand("clearlogo", "Remove uploaded brand logo"),
             BotCommand("captionstyle", "Choose caption theme"),
             BotCommand("translate", "Translate subtitles"),
+            BotCommand("outro", "Set a branded end card"),
             BotCommand("formats", "Choose video aspect-ratio exports"),
             BotCommand("silence", "Toggle silence removal"),
             BotCommand("stats", "Admin usage dashboard"),
@@ -705,6 +717,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, logo_upload))
     app.add_handler(CommandHandler("captionstyle", captionstyle_cmd))
     app.add_handler(CommandHandler("translate", translate_cmd))
+    app.add_handler(CommandHandler("outro", outro_cmd))
     app.add_handler(CommandHandler("formats", formats_cmd))
     app.add_handler(CommandHandler("silence", silence_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
