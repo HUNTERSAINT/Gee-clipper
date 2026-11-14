@@ -52,6 +52,7 @@ class Opts:
     hook: bool = True
     music: bool = True
     grade: bool = True
+    watermark: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -446,11 +447,12 @@ def make_clip(
     hook_text = clip.get("hook") or clip["title"]
 
     ass_name = None
-    if opts.captions or opts.hook:
+    if opts.captions or opts.hook or opts.watermark:
         ass_name = f"cap_{idx}.ass"
         V.build_ass(
             words, clip["start"], clip["end"], os.path.join(workdir, ass_name),
             hook=hook_text if opts.hook else None, captions=opts.captions,
+            watermark=opts.watermark,
         )
 
     log.info("Clip %s stage=layout starting", idx)
