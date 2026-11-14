@@ -228,7 +228,7 @@ def prune_cache(days: int = 7) -> None:
 # --------------------------------------------------------------------------- #
 # LLM picks the best moments (uses YouTube "most replayed" data when present)
 # --------------------------------------------------------------------------- #
-def _prompt(has_heat: bool) -> str:
+def _prompt(has_heat: bool, n_clips: int = C.MAX_CLIPS) -> str:
     heat = (
         "\n- Each line starts with [seconds|H#]. H# (0-9) is how often viewers "
         "replayed that part; higher means a better moment. Use it as a strong hint."
@@ -245,7 +245,7 @@ Rules:
 - Prefer emotional peaks, funny moments, surprising facts, strong opinions, useful tips.
 - Skip intros, sponsor reads, small talk, rambling.
 - Use the exact seconds shown in the brackets.
-- Return at most 3 clips; fewer or none if nothing is good.{heat}
+- Return at most {n_clips} clips; fewer or none if nothing is good.{heat}
 - "hook" is 2-5 punchy words for the thumbnail (no emoji, no hashtags).
 - "description" is a 1-2 sentence caption for social media.
 - "hashtags" is 3-6 relevant words without the # sign.
@@ -303,7 +303,7 @@ def _ask(model: str, prompt: str, text: str):
 
 def pick_clips(segments, n_clips: int, heatmap=None):
     heat_fn = heat_for(heatmap)
-    prompt = _prompt(heat_fn is not None)
+    prompt = _prompt(heat_fn is not None, n_clips)
     candidates = []
     for text in build_windows(segments, heat_fn):
         try:
