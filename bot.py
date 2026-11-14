@@ -22,6 +22,7 @@ from telegram.ext import (
 
 import config as C
 import core
+import storage as S
 import yt_dlp
 
 logging.basicConfig(
@@ -57,6 +58,7 @@ HELP = (
     "/panel - button-based settings\n"
     "/preset viral|podcast|educational|cinematic|clean\n"
     "/queue, /cancel, /history\n"
+    "/favorites, /unfavorite ID, /analytics\n"
     "/watermark YourBrand (or off)\n"
     "/formats all|vertical - 9:16, 1:1 and 16:9 exports\n"
     "/silence on|off - trim long pauses\n"
@@ -97,22 +99,15 @@ def summary(o: core.Opts) -> str:
 
 
 def allowed(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
-    blocked = ctx.application.bot_data.setdefault("blocked_users", set())
-    return update.effective_user.id not in blocked and (not C.ALLOWED_USERS or update.effective_user.id in C.ALLOWED_USERS)
+    uid = update.effective_user.id
+    legacy = ctx.application.bot_data.setdefault("blocked_users", set())
+    return uid not in legacy and not S.is_blocked(uid) and (
+        not C.ALLOWED_USERS or uid in C.ALLOWED_USERS
+    )
 
 
 def use_quota(uid: int, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
-    if uid in C.ADMIN_USERS or C.DAILY_LIMIT <= 0:
-        return True
-    usage = ctx.application.bot_data.setdefault("daily_usage", {})
-    today = date.today().isoformat()
-    day, n = usage.get(str(uid), (today, 0))
-    if day != today:
-        n = 0
-    if n >= C.DAILY_LIMIT:
-        return False
-    usage[str(uid)] = (today, n + 1)
-    return True
+    return True if uid in C.ADMIN_USERS else S.consume_quota(uid, C.DAILY_LIMIT)
 
 
 def friendly_error(e: Exception) -> str:
@@ -374,19 +369,12 @@ async def stats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in C.ADMIN_USERS:
         await update.message.reply_text("Admin only.")
         return
-    data = ctx.application.bot_data
-    usage = data.get("daily_usage", {})
-    today = date.today().isoformat()
-    today_count = sum(n for day, n in usage.values() if day == today)
-    users = data.get("total_users", set())
+    data = S.global_analytics()
     await update.message.reply_text(
         "📊 Gee Clipper admin dashboard\n"
-        f"Total jobs: {data.get('total_jobs', 0)}\n"
-        f"Unique users seen: {len(users)}\n"
-        f"Today's accepted jobs: {today_count}\n"
-        f"Active jobs: {sum(1 for j in JOB_STATES.values() if j.get('status') == 'processing')}\n"
-        f"Queued jobs: {sum(1 for j in JOB_STATES.values() if j.get('status') == 'queued')}\n"
-        f"Blocked users: {len(data.get('blocked_users', set()))}"
+        f"Registered users: {data['users']}\nTotal jobs: {data['jobs']}\n"
+        f"Clips generated: {data['clips']}\nJobs today: {data['today_jobs']}\n"
+        f"Active jobs: {data['active_jobs']}\nBlocked users: {data['blocked']}"
     )
 
 
@@ -400,6 +388,7 @@ async def block_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /block TELEGRAM_USER_ID")
         return
     ctx.application.bot_data.setdefault("blocked_users", set()).add(target)
+    S.set_blocked(target, True)
     await update.message.reply_text(f"User {target} blocked.")
 
 
@@ -413,18 +402,72 @@ async def unblock_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /unblock TELEGRAM_USER_ID")
         return
     ctx.application.bot_data.setdefault("blocked_users", set()).discard(target)
+    S.set_blocked(target, False)
     await update.message.reply_text(f"User {target} unblocked.")
 
 
 async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    history = ctx.user_data.get("history", [])
-    if not history:
+    rows = S.history(update.effective_user.id, 10)
+    if not rows:
         await update.message.reply_text("No recent jobs yet.")
         return
     lines = ["🕘 Recent jobs"]
-    for item in history[-10:][::-1]:
-        lines.append(f"• {item.get('title', 'Video')[:55]} — {item.get('clips', 0)} clips ({item.get('status', 'done')})")
+    for item in rows:
+        lines.append(f"• {item['title'][:55]} — {item['clips']} clips ({item['status']})")
     await update.message.reply_text("\n".join(lines))
+
+
+async def favorites_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    rows = S.list_favorites(update.effective_user.id)
+    if not rows:
+        await update.message.reply_text("No saved clips yet. Tap the save button under a generated clip.")
+        return
+    lines = ["⭐ YOUR SAVED CLIPS"]
+    for item in rows:
+        lines.append(
+            f"\n{item['clip_id']} · {item['title']}\n"
+            f"{item['start']:.1f}s–{item['end']:.1f}s · score {item['score']:.0f}/10\n"
+            f"{item['url']}#t={int(item['start'])}"
+        )
+    lines.append("\nRemove one with /unfavorite CLIP_ID.")
+    await update.message.reply_text("\n".join(lines), disable_web_page_preview=True)
+
+
+async def unfavorite_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    clip_id = ctx.args[0].strip() if ctx.args else ""
+    if not clip_id:
+        await update.message.reply_text("Usage: /unfavorite CLIP_ID (find IDs with /favorites)")
+        return
+    await update.message.reply_text(
+        "Removed from saved clips." if S.unfavorite(update.effective_user.id, clip_id)
+        else "That saved clip wasn't found."
+    )
+
+
+async def analytics_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    data = S.user_analytics(update.effective_user.id)
+    remaining = "unlimited" if C.DAILY_LIMIT <= 0 or update.effective_user.id in C.ADMIN_USERS else str(max(0, C.DAILY_LIMIT - data["used_today"]))
+    await update.message.reply_text(
+        "📈 YOUR GEE CLIPPER ANALYTICS\n"
+        f"Jobs processed: {data['jobs']}\nClips generated: {data['clips']}\n"
+        f"Saved favourites: {data['favorites']}\nToday's remaining quota: {remaining}"
+    )
+
+
+async def favorite_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "fav:done":
+        return
+    clip_id = query.data.split(":", 1)[1]
+    if S.favorite(update.effective_user.id, clip_id):
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⭐ Saved to favourites", callback_data="fav:done")
+            ]])
+        )
+    else:
+        await query.answer("This clip is no longer available.", show_alert=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -516,6 +559,10 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
     stats = ctx.application.bot_data
     stats["total_jobs"] = int(stats.get("total_jobs", 0)) + 1
     stats["total_users"] = set(stats.get("total_users", [])) | {update.effective_user.id}
+    S.record_user(update.effective_user.id)
+    job_id = S.create_job(update.effective_user.id, url)
+    job_status = "failed"
+    sent = 0
     status = await msg.reply_text("Checking video...")
     workdir = tempfile.mkdtemp(prefix="clipper_")
 
@@ -531,6 +578,7 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
     delivery_files = []
     try:
         info = await asyncio.to_thread(core.get_info, url)
+        S.update_job(job_id, title=str(info.get("title") or "YouTube video"))
         duration = info.get("duration") or 0
         if info.get("is_live"):
             await step("Live streams aren't supported.")
@@ -567,7 +615,6 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
             await step("Couldn't find good clip moments in this video.")
             return
 
-        sent = 0
         used_tracks: dict = {}  # keeps each clip of this video on a different song
         for i, clip in enumerate(clips, 1):
             await step(f"Preparing clip {i}/{len(clips)}...")
@@ -580,6 +627,7 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                 res = await asyncio.to_thread(
                     core.make_clip, url, words, clip, i, workdir, opts, clip_progress, used_tracks
                 )
+                clip_id = S.record_clip(update.effective_user.id, job_id, url, clip)
                 with open(res["video"], "rb") as f:
                     thumb = open(res["cover_small"], "rb") if "cover_small" in res else None
                     try:
@@ -588,6 +636,9 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                             caption=build_caption(clip),
                             thumbnail=thumb,
                             supports_streaming=True,
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("⭐ Save to favourites", callback_data=f"fav:{clip_id}")
+                            ]]),
                             width=720,
                             height=1280,
                             read_timeout=180,
@@ -650,11 +701,8 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                 log.exception("clip %s failed", i)
                 await msg.reply_text(f"Clip {i} failed: {friendly_error(e)}")
 
-        history = ctx.user_data.setdefault("history", [])
-        history.append({"title": str(info.get("title") or "YouTube video")[:100],
-                        "url": url, "clips": sent, "status": "completed" if sent else "no clips",
-                        "date": date.today().isoformat()})
-        del history[:-10]
+        job_status = "completed" if sent else "no clips"
+        S.update_job(job_id, status=job_status, clips=sent)
         if delivery_files:
             archive = os.path.join(workdir, "gee-clipper-exports.zip")
             try:
@@ -670,20 +718,17 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                 log.exception("export archive creation or delivery failed")
         await step(f"Done. {sent} clip(s) sent. Use /history for recent jobs.")
     except JobCancelled:
+        job_status = "cancelled"
         try:
             await status.edit_text("Job cancelled.")
         except Exception:
             pass
-        history = ctx.user_data.setdefault("history", [])
-        history.append({"title": "Cancelled video", "clips": 0, "status": "cancelled"})
-        del history[:-10]
     except Exception as e:
+        job_status = "failed"
         log.exception("job failed")
         await step(f"Failed: {friendly_error(e)}")
-        history = ctx.user_data.setdefault("history", [])
-        history.append({"title": "Failed video", "clips": 0, "status": "failed"})
-        del history[:-10]
     finally:
+        S.update_job(job_id, status=job_status, clips=sent)
         shutil.rmtree(workdir, ignore_errors=True)
 
 
@@ -703,6 +748,9 @@ async def post_init(app: Application):
             BotCommand("queue", "Check queue"),
             BotCommand("cancel", "Cancel current job"),
             BotCommand("history", "Recent jobs"),
+            BotCommand("favorites", "Your saved clips"),
+            BotCommand("unfavorite", "Remove a saved clip"),
+            BotCommand("analytics", "Your usage analytics"),
             BotCommand("watermark", "Set or remove text watermark"),
             BotCommand("clearlogo", "Remove uploaded brand logo"),
             BotCommand("clearmusic", "Remove uploaded soundtrack"),
@@ -734,7 +782,10 @@ def main():
         os.path.getsize(cookie_path) if cookie_path and os.path.isfile(cookie_path) else 0,
         C.JS_RUNTIME or "yt-dlp default",
     )
-    persistence = PicklePersistence(filepath=os.getenv("BOT_PERSISTENCE_FILE", "gee_clipper_data.pickle"))
+    S.init()
+    persistence = PicklePersistence(filepath=os.getenv(
+        "BOT_PERSISTENCE_FILE", os.path.join(C.DATA_DIR, "gee_clipper_data.pickle")
+    ))
     app = (
         Application.builder()
         .token(C.TELEGRAM_TOKEN)
@@ -752,6 +803,10 @@ def main():
     app.add_handler(CommandHandler("queue", queue_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
+    app.add_handler(CommandHandler("favorites", favorites_cmd))
+    app.add_handler(CommandHandler("unfavorite", unfavorite_cmd))
+    app.add_handler(CommandHandler("analytics", analytics_cmd))
+    app.add_handler(CallbackQueryHandler(favorite_callback, pattern=r"^fav:"))
     app.add_handler(CommandHandler("watermark", watermark_cmd))
     app.add_handler(CommandHandler("clearlogo", clearlogo_cmd))
     app.add_handler(CommandHandler("clearmusic", clearmusic_cmd))

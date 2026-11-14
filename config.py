@@ -109,5 +109,9 @@ JS_RUNTIME = os.getenv("YT_JS_RUNTIME", "")
 ALLOWED_USERS = _ids("ALLOWED_USERS")  # empty = anyone can use the bot
 ADMIN_USERS = _ids("ADMIN_USERS")  # exempt from the daily limit
 
-CACHE_DIR = os.getenv("CACHE_DIR", "cache")
+DATA_DIR = os.path.abspath(os.getenv("DATA_DIR", "data"))
+DB_PATH = os.path.abspath(os.getenv("GEE_DB_PATH", os.path.join(DATA_DIR, "gee_clipper.sqlite3")))
+CACHE_DIR = os.path.abspath(os.getenv("CACHE_DIR", os.path.join(DATA_DIR, "cache")))
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
 TG_FILE_LIMIT = 49 * 1024 * 1024  # Telegram bot upload cap is 50 MB

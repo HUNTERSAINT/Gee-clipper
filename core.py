@@ -57,6 +57,7 @@ class Opts:
     export_formats: str = "all"  # vertical only, or all social aspect ratios
     remove_silence: bool = True
     logo_path: str = ""
+    music_path: str = ""
     subtitle_language: str = "off"
     outro_text: str = "Follow for more"
     music_path: str = ""

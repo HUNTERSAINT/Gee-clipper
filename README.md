@@ -126,3 +126,26 @@ Cookies are login credentials: never commit them or share them.
 - **Thumbnails** are the best real frame plus text, not AI-generated images
 - **One video is processed at a time**, others queue
 - Only clip content you own or have permission to use
+
+
+## Persistent user data, saved clips and analytics
+
+Gee Clipper stores user records, daily quota reservations, job history, generated clip metadata,
+blocked accounts and saved favourites in a transactional SQLite database. Each generated clip
+has a Save to favourites button. The /favorites command lists saved moments with direct YouTube
+timestamp links; /unfavorite ID removes one. /analytics shows each user's job and clip totals
+and remaining daily quota. Admin /stats reads database-backed global totals.
+
+Set DATA_DIR to a persistent mounted directory to retain the database, transcript cache,
+uploaded logos/music and Telegram settings across container replacements. GEE_DB_PATH,
+CACHE_DIR and BOT_PERSISTENCE_FILE can override their individual paths. The default data/
+directory is still ephemeral on hosts without a persistent volume.
+
+## External publishing and paid plans
+
+Direct TikTok, Instagram and YouTube publishing, OAuth connection flows, scheduled social
+publishing, payment checkout and subscription activation require platform developer
+credentials, user authorization, public callback URLs and payment-provider credentials.
+They are not enabled by dummy tokens. No platform credentials or payment keys are stored
+in the repository. Configure provider integrations only after obtaining approved developer
+access; never commit API secrets.
