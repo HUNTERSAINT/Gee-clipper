@@ -186,7 +186,7 @@ def _ass_text(s: str) -> str:
 
 
 def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
-              captions=True):
+              captions=True, watermark=None):
     header = (
         "[Script Info]\nScriptType: v4.00+\n"
         f"PlayResX: {OUT_W}\nPlayResY: {OUT_H}\nWrapStyle: 0\n\n"
@@ -197,10 +197,15 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
         "Style: Default,Liberation Sans,56,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
         "1,0,0,0,100,100,0,0,1,5,1,2,40,40,340,1\n"
         "Style: Hook,Liberation Sans,50,&H00FFFFFF,&H000000FF,&H40000000,&H64000000,"
-        "1,0,0,0,100,100,0,0,3,14,0,8,50,50,150,1\n\n"
+        "1,0,0,0,100,100,0,0,3,14,0,8,50,50,150,1\n"
+        "Style: Watermark,Liberation Sans,24,&H80FFFFFF,&H000000FF,&H80000000,&H00000000,"
+        "1,0,0,0,100,100,0,0,1,2,1,9,35,35,35,1\n\n"
         "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
     )
     lines = []
+    if watermark:
+        wm = _ass_text(str(watermark)[:40])
+        lines.append(f"Dialogue: 2,{ass_time(0)},{ass_time(clip_end - clip_start)},Watermark,,0,0,0,,{wm}")
     if hook:
         wrapped = r"\N".join(textwrap.wrap(_ass_text(hook), 20)[:3])
         lines.append(
