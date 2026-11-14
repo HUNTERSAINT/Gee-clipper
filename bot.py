@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+import zipfile
 from datetime import date
 
 from telegram import BotCommand, InputMediaPhoto, Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -473,6 +474,7 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
         except Exception:
             log.exception("Telegram progress message update failed")
 
+    delivery_files = []
     try:
         info = await asyncio.to_thread(core.get_info, url)
         duration = info.get("duration") or 0
@@ -541,6 +543,12 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                         if thumb:
                             thumb.close()
                 sent += 1
+                for key in ("video", "vtt", "subtitles", "translated_subtitles", "thumb", "cover"):
+                    if res.get(key) and os.path.isfile(res[key]):
+                        delivery_files.append((res[key], os.path.basename(res[key])))
+                for fmt, variant_path in (res.get("variants") or {}).items():
+                    if os.path.isfile(variant_path):
+                        delivery_files.append((variant_path, os.path.basename(variant_path)))
                 if res.get("vtt"):
                     try:
                         with open(res["vtt"], "rb") as vtt_file:
@@ -593,6 +601,19 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                         "url": url, "clips": sent, "status": "completed" if sent else "no clips",
                         "date": date.today().isoformat()})
         del history[:-10]
+        if delivery_files:
+            archive = os.path.join(workdir, "gee-clipper-exports.zip")
+            try:
+                with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=4) as pack:
+                    for source, name in delivery_files:
+                        pack.write(source, arcname=name)
+                if os.path.getsize(archive) <= C.TG_FILE_LIMIT:
+                    with open(archive, "rb") as pack:
+                        await msg.reply_document(pack, filename="gee-clipper-exports.zip", caption="📦 Your clips, subtitles and thumbnails in one pack")
+                else:
+                    await msg.reply_text("📦 Export pack is larger than Telegram's upload limit. Individual files have been sent above.")
+            except Exception:
+                log.exception("export archive creation or delivery failed")
         await step(f"Done. {sent} clip(s) sent. Use /history for recent jobs.")
     except JobCancelled:
         try:
