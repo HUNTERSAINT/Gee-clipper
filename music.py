@@ -240,7 +240,7 @@ def mix_filter(has_voice: bool, feat: dict, duration: float, level_db: float = -
     if not has_voice:
         return music.replace("[music]", "[m0];[m0]loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.95[aout]")
     return (
-        "[0:a:0]aresample=48000,highpass=f=80,acompressor=threshold=0.1:ratio=2.5:attack=8:release=160,loudnorm=I=-16:TP=-2:LRA=9[voice0];"
+        "[0:a:0]aresample=48000,highpass=f=80,afftdn=nr=8:nf=-25,acompressor=threshold=0.1:ratio=2.5:attack=8:release=160,loudnorm=I=-16:TP=-2:LRA=9[voice0];"
         "[voice0]asplit=2[voice][vsc];"
         + music + ";"
         "[music][vsc]sidechaincompress=threshold=0.015:ratio=5:attack=15:release=450:makeup=1[ducked];"
