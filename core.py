@@ -17,7 +17,9 @@ import music as M
 import video as V
 import voiceover as VO
 
-log = logging.getLogger("clipper.core")\n\nTRANSCRIPT_CACHE_VERSION = "asr4"
+log = logging.getLogger("clipper.core")
+
+TRANSCRIPT_CACHE_VERSION = "asr4"
 
 
 def _safe_ydl_message(message) -> str:
