@@ -248,6 +248,41 @@ async def watermark_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Watermark: {o.watermark or 'off'}")
 
 
+async def logo_upload(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update, ctx):
+        await update.message.reply_text("Sorry, this bot is private.")
+        return
+    if not update.message.photo:
+        return
+    photo = update.message.photo[-1]
+    if photo.file_size and photo.file_size > 8 * 1024 * 1024:
+        await update.message.reply_text("Please upload a smaller logo image (under 8 MB).")
+        return
+    folder = os.path.join(C.CACHE_DIR, "user-assets")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"logo_{update.effective_user.id}.png")
+    try:
+        remote = await photo.get_file()
+        await remote.download_to_drive(custom_path=path)
+        get_opts(ctx).logo_path = path
+        await update.message.reply_text("✅ Logo saved. It will appear in the bottom-right corner of future clips. Use /clearlogo to remove it.")
+    except Exception:
+        log.exception("user logo upload failed")
+        await update.message.reply_text("I couldn't save that logo. Please try uploading it again.")
+
+
+async def clearlogo_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    o = get_opts(ctx)
+    path = o.logo_path
+    o.logo_path = ""
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    await update.message.reply_text("Your logo overlay has been removed.")
+
+
 async def formats_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     value = ctx.args[0].lower() if ctx.args else ""
     if value not in ("all", "vertical"):
@@ -576,6 +611,7 @@ async def post_init(app: Application):
             BotCommand("cancel", "Cancel current job"),
             BotCommand("history", "Recent jobs"),
             BotCommand("watermark", "Set or remove text watermark"),
+            BotCommand("clearlogo", "Remove uploaded brand logo"),
             BotCommand("captionstyle", "Choose caption theme"),
             BotCommand("formats", "Choose video aspect-ratio exports"),
             BotCommand("silence", "Toggle silence removal"),
@@ -621,6 +657,8 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("watermark", watermark_cmd))
+    app.add_handler(CommandHandler("clearlogo", clearlogo_cmd))
+    app.add_handler(MessageHandler(filters.PHOTO, logo_upload))
     app.add_handler(CommandHandler("captionstyle", captionstyle_cmd))
     app.add_handler(CommandHandler("formats", formats_cmd))
     app.add_handler(CommandHandler("silence", silence_cmd))
