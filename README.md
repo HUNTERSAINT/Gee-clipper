@@ -17,6 +17,13 @@ A Telegram bot that turns a YouTube link into short vertical clips ready for Tik
 - **Downloadable SRT subtitles** for each finished clip
 - **Optional text watermark** that can be set per user
 - **Four karaoke caption themes:** Bold, Classic, Neon and Minimal
+- **Automatic silence trimming** that keeps natural short pauses and remaps caption timing
+- **Three social aspect ratios:** 9:16, 1:1 and 16:9, with blurred-fill framing for landscape and square
+- **SRT and WebVTT subtitle downloads**, with optional AI translation
+- **Custom uploaded logo overlay** plus the text watermark option
+- **Batch processing** for up to three YouTube links in one message
+- **ZIP export pack** containing clips, alternate formats, subtitles and thumbnails when it fits Telegram's upload limit
+- **Admin tools** for usage stats and blocking/unblocking Telegram users
 
 ## How it works
 
@@ -65,6 +72,14 @@ Send a YouTube link. Add a number to choose how many clips: `https://youtu.be/xx
 | `/queue` | Check your current queue status |
 | `/cancel` | Request cancellation of your current job |
 | `/history` | Show your last 10 jobs |
+| `/formats all\|vertical` | Export vertical only or all three aspect ratios |
+| `/silence on\|off` | Enable or disable transcript-guided pause trimming |
+| `/translate Spanish` | Add translated SRT subtitles; use `/translate off` to disable |
+| Send a logo photo | Save a logo overlay for your clips; `/clearlogo` removes it |
+| `/stats` | Admin-only usage dashboard |
+| `/block 123456` / `/unblock 123456` | Admin user management |
+
+Settings, recent job history, daily usage, logo path and blocked-user list are stored with Telegram's local persistence file. The admin commands require your Telegram ID in `ADMIN_USERS`. Batch processing accepts up to three links in one message. Direct publishing to social platforms is not enabled: each platform requires its own approved app/OAuth credentials and user authorization. The optional AI subtitle translation consumes Groq quota.
 
 Settings, recent job history and daily usage are stored with Telegram's local persistence file. They survive ordinary process restarts while that file remains on disk. Hosts with ephemeral filesystems can lose them when a container is replaced; attach persistent storage and set `BOT_PERSISTENCE_FILE` to a path on that storage if long-term persistence is required. The queue and cancellation controls are process-local.
 
