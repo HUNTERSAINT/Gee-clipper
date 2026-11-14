@@ -8,12 +8,14 @@ import sys
 import tempfile
 from datetime import date
 
-from telegram import BotCommand, InputMediaPhoto, Update
+from telegram import BotCommand, InputMediaPhoto, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    PicklePersistence,
     filters,
 )
 
@@ -32,7 +34,12 @@ log = logging.getLogger("clipper.bot")
 URL_RE = re.compile(r"(https?://\S+)")
 JOB_LOCK = asyncio.Semaphore(1)  # one video at a time (CPU + free-tier limits)
 WAITING = 0
-USAGE: dict[int, tuple[str, int]] = {}
+JOB_STATES: dict[int, dict] = {}
+CANCEL_FLAGS: dict[int, asyncio.Event] = {}
+
+
+class JobCancelled(Exception):
+    pass
 
 HELP = (
     "Send me a YouTube link and I'll cut it into short vertical clips with "
@@ -109,6 +116,90 @@ def build_caption(clip: dict) -> str:
     return "\n".join(p for p in parts if p)[:1000]
 
 
+
+def settings_keyboard(o: core.Opts):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Captions {'ON' if o.captions else 'OFF'}", callback_data="toggle:captions"),
+         InlineKeyboardButton(f"Hook {'ON' if o.hook else 'OFF'}", callback_data="toggle:hook")],
+        [InlineKeyboardButton(f"Music {'ON' if o.music else 'OFF'}", callback_data="toggle:music"),
+         InlineKeyboardButton(f"Grade {'ON' if o.grade else 'OFF'}", callback_data="toggle:grade")],
+        [InlineKeyboardButton("Auto", callback_data="layout:auto"),
+         InlineKeyboardButton("Face crop", callback_data="layout:crop"),
+         InlineKeyboardButton("Blur", callback_data="layout:blur")],
+        [InlineKeyboardButton("1 clip", callback_data="clips:1"),
+         InlineKeyboardButton("3 clips", callback_data="clips:3"),
+         InlineKeyboardButton("6 clips", callback_data="clips:6")],
+    ])
+
+
+async def panel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    o = get_opts(ctx)
+    await update.message.reply_text("⚙️ Gee Clipper controls\\n\\n" + summary(o),
+                                    reply_markup=settings_keyboard(o))
+
+
+async def settings_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    o = get_opts(ctx)
+    action, value = q.data.split(":", 1)
+    if action == "toggle" and value in ("captions", "hook", "music", "grade"):
+        setattr(o, value, not getattr(o, value))
+    elif action == "layout" and value in ("auto", "crop", "blur"):
+        o.layout = value
+    elif action == "clips" and value.isdigit():
+        o.clips = max(1, min(int(value), C.MAX_CLIPS))
+    await q.edit_message_text("⚙️ Gee Clipper controls\\n\\n" + summary(o),
+                              reply_markup=settings_keyboard(o))
+
+
+async def preset_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    name = ctx.args[0].lower() if ctx.args else ""
+    presets = {
+        "viral": dict(clips=6, layout="auto", captions=True, hook=True, music=True, grade=True),
+        "podcast": dict(clips=4, layout="auto", captions=True, hook=False, music=False, grade=True),
+        "educational": dict(clips=4, layout="auto", captions=True, hook=True, music=False, grade=True),
+        "cinematic": dict(clips=3, layout="blur", captions=True, hook=True, music=True, grade=True),
+        "clean": dict(clips=3, layout="auto", captions=False, hook=False, music=False, grade=True),
+    }
+    if name not in presets:
+        await update.message.reply_text("Choose: viral, podcast, educational, cinematic, clean. Example: /preset viral")
+        return
+    o = get_opts(ctx)
+    for key, value in presets[name].items():
+        setattr(o, key, value)
+    await update.message.reply_text(f"{name.title()} preset applied.\\n\\n" + summary(o),
+                                    reply_markup=settings_keyboard(o))
+
+
+async def queue_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    state = JOB_STATES.get(update.effective_user.id)
+    active = sum(1 for x in JOB_STATES.values() if x.get("status") == "processing")
+    queued = sum(1 for x in JOB_STATES.values() if x.get("status") == "queued")
+    mine = f"Your job is {state.get('status')}." if state else "You have no active job."
+    await update.message.reply_text(f"📋 Queue\\n{mine}\\nProcessing: {active}\\nWaiting: {queued}")
+
+
+async def cancel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    event = CANCEL_FLAGS.get(update.effective_user.id)
+    if not event:
+        await update.message.reply_text("You have no active job to cancel.")
+        return
+    event.set()
+    await update.message.reply_text("Cancellation requested. Gee Clipper will stop after the current download/render step.")
+
+
+async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    history = ctx.user_data.get("history", [])
+    if not history:
+        await update.message.reply_text("No recent jobs yet.")
+        return
+    lines = ["🕘 Recent jobs"]
+    for item in history[-10:][::-1]:
+        lines.append(f"• {item.get('title', 'Video')[:55]} — {item.get('clips', 0)} clips ({item.get('status', 'done')})")
+    await update.message.reply_text("\\n".join(lines))
+
+
 # --------------------------------------------------------------------------- #
 # handlers
 # --------------------------------------------------------------------------- #
@@ -164,24 +255,35 @@ async def handle_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    uid = update.effective_user.id
+    event = asyncio.Event()
+    CANCEL_FLAGS[uid] = event
+    JOB_STATES[uid] = {"status": "queued", "url": url}
     if JOB_LOCK.locked():
-        await update.message.reply_text(
-            f"Queued. {WAITING + 1} video(s) ahead of yours..."
-        )
+        await update.message.reply_text(f"Queued. {WAITING + 1} ahead. Use /queue or /cancel.")
     WAITING += 1
     try:
         async with JOB_LOCK:
-            await process(update, url, opts)
+            if event.is_set():
+                await update.message.reply_text("Job cancelled before processing.")
+                return
+            JOB_STATES[uid]["status"] = "processing"
+            await process(update, url, opts, ctx)
     finally:
         WAITING -= 1
+        JOB_STATES.pop(uid, None)
+        CANCEL_FLAGS.pop(uid, None)
 
 
-async def process(update: Update, url: str, opts: core.Opts):
+async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     status = await msg.reply_text("Checking video...")
     workdir = tempfile.mkdtemp(prefix="clipper_")
 
     async def step(text: str):
+        event = CANCEL_FLAGS.get(update.effective_user.id)
+        if event and event.is_set():
+            raise JobCancelled()
         try:
             await status.edit_text(text)
         except Exception:
@@ -272,9 +374,20 @@ async def process(update: Update, url: str, opts: core.Opts):
                 await msg.reply_text(f"Clip {i} failed: {friendly_error(e)}")
 
         await step(f"Done. {sent} clip(s) sent. Want more? /clips 6 then send the link again (instant).")
+    except JobCancelled:
+        try:
+            await status.edit_text("Job cancelled.")
+        except Exception:
+            pass
+        history = ctx.user_data.setdefault("history", [])
+        history.append({"title": "Cancelled video", "clips": 0, "status": "cancelled"})
+        del history[:-10]
     except Exception as e:
         log.exception("job failed")
         await step(f"Failed: {friendly_error(e)}")
+        history = ctx.user_data.setdefault("history", [])
+        history.append({"title": "Failed video", "clips": 0, "status": "failed"})
+        del history[:-10]
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -290,6 +403,11 @@ async def post_init(app: Application):
             BotCommand("hook", "on | off"),
             BotCommand("music", "on | off"),
             BotCommand("grade", "on | off"),
+            BotCommand("panel", "Button-based settings"),
+            BotCommand("preset", "Apply an editing preset"),
+            BotCommand("queue", "Check queue"),
+            BotCommand("cancel", "Cancel current job"),
+            BotCommand("history", "Recent jobs"),
         ]
     )
 
@@ -310,9 +428,11 @@ def main():
         os.path.getsize(cookie_path) if cookie_path and os.path.isfile(cookie_path) else 0,
         C.JS_RUNTIME or "yt-dlp default",
     )
+    persistence = PicklePersistence(filepath=os.getenv("BOT_PERSISTENCE_FILE", "gee_clipper_data.pickle"))
     app = (
         Application.builder()
         .token(C.TELEGRAM_TOKEN)
+        .persistence(persistence)
         .concurrent_updates(True)
         .read_timeout(30)
         .write_timeout(180)
@@ -320,6 +440,12 @@ def main():
         .build()
     )
     app.add_handler(CommandHandler(["start", "help"], start))
+    app.add_handler(CallbackQueryHandler(settings_callback, pattern=r"^(toggle|layout|clips):"))
+    app.add_handler(CommandHandler("panel", panel_cmd))
+    app.add_handler(CommandHandler("preset", preset_cmd))
+    app.add_handler(CommandHandler("queue", queue_cmd))
+    app.add_handler(CommandHandler("cancel", cancel_cmd))
+    app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(
         CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade"], settings_cmd)
     )
