@@ -73,6 +73,7 @@ def summary(o: core.Opts) -> str:
         f"Hook title: {'on' if o.hook else 'off'}\n"
         f"Music: {'on' if o.music else 'off'}\n"
         f"Colour grade: {'on' if o.grade else 'off'}"
+        + f"\nCaption theme: {o.caption_style}"
         + f"\nWatermark: {o.watermark or 'off'}"
     )
 
@@ -146,6 +147,10 @@ def settings_keyboard(o: core.Opts):
         [InlineKeyboardButton("1 clip", callback_data="clips:1"),
          InlineKeyboardButton("3 clips", callback_data="clips:3"),
          InlineKeyboardButton("6 clips", callback_data="clips:6")],
+        [InlineKeyboardButton("Bold", callback_data="style:bold"),
+         InlineKeyboardButton("Classic", callback_data="style:classic"),
+         InlineKeyboardButton("Neon", callback_data="style:neon"),
+         InlineKeyboardButton("Minimal", callback_data="style:minimal")],
     ])
 
 
@@ -166,6 +171,8 @@ async def settings_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         o.layout = value
     elif action == "clips" and value.isdigit():
         o.clips = max(1, min(int(value), C.MAX_CLIPS))
+    elif action == "style" and value in ("bold", "classic", "neon", "minimal"):
+        o.caption_style = value
     await q.edit_message_text("⚙️ Gee Clipper controls\n\n" + summary(o),
                               reply_markup=settings_keyboard(o))
 
@@ -204,6 +211,16 @@ async def cancel_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     event.set()
     await update.message.reply_text("Cancellation requested. Gee Clipper will stop after the current download/render step.")
+
+
+async def captionstyle_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    value = ctx.args[0].lower() if ctx.args else ""
+    if value not in ("bold", "classic", "neon", "minimal"):
+        await update.message.reply_text("Choose a caption theme: bold, classic, neon or minimal. Example: /captionstyle neon")
+        return
+    o = get_opts(ctx)
+    o.caption_style = value
+    await update.message.reply_text(f"Caption theme set to {value}.", reply_markup=settings_keyboard(o))
 
 
 async def watermark_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -451,6 +468,7 @@ async def post_init(app: Application):
             BotCommand("cancel", "Cancel current job"),
             BotCommand("history", "Recent jobs"),
             BotCommand("watermark", "Set or remove text watermark"),
+            BotCommand("captionstyle", "Choose caption theme"),
         ]
     )
 
@@ -483,13 +501,14 @@ def main():
         .build()
     )
     app.add_handler(CommandHandler(["start", "help"], start))
-    app.add_handler(CallbackQueryHandler(settings_callback, pattern=r"^(toggle|layout|clips):"))
+    app.add_handler(CallbackQueryHandler(settings_callback, pattern=r"^(toggle|layout|clips|style):"))
     app.add_handler(CommandHandler("panel", panel_cmd))
     app.add_handler(CommandHandler("preset", preset_cmd))
     app.add_handler(CommandHandler("queue", queue_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("watermark", watermark_cmd))
+    app.add_handler(CommandHandler("captionstyle", captionstyle_cmd))
     app.add_handler(
         CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade"], settings_cmd)
     )
