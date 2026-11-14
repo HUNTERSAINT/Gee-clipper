@@ -238,7 +238,8 @@ def remove_silence(path: str, words: list, clip_start: float, clip_end: float,
         ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
          "stream=codec_type", "-of", "csv=p=0", path],
         capture_output=True, text=True,
-    ).returncode == 0
+    )
+    has_audio = has_audio.returncode == 0 and bool(has_audio.stdout.strip())
     parts, concat_inputs, remapped, offset = [], [], [], 0.0
     for index, (start, end) in enumerate(spans):
         parts.append(f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS[v{index}]")
