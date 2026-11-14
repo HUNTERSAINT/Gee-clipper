@@ -439,7 +439,7 @@ def classify_music_mood(text: str) -> tuple[str, float]:
 def translate_subtitle_file(source: str, target_language: str, output_path: str):
     """Translate subtitle lines in bounded batches while preserving exact timecodes."""
     raw = Path(source).read_text(encoding="utf-8")
-    blocks = [b for b in re.split(r"\\n\\s*\\n", raw.strip()) if b.strip()]
+    blocks = [b for b in re.split(r"\n\s*\n", raw.strip()) if b.strip()]
     parsed = []
     for block in blocks:
         lines = block.splitlines()
@@ -451,7 +451,7 @@ def translate_subtitle_file(source: str, target_language: str, output_path: str)
         payload = json.dumps([text for _, text in batch], ensure_ascii=False)
         prompt = (
             f"Translate each subtitle string into {target_language}. Preserve meaning, tone, "
-            "names and short-form speech. Return JSON only as {\\"translations\\":[...]} "
+            'names and short-form speech. Return JSON only as {"translations":[...]} '
             "with exactly the same number and order of strings."
         )
         try:
@@ -461,12 +461,12 @@ def translate_subtitle_file(source: str, target_language: str, output_path: str)
         values = json.loads(response.choices[0].message.content).get("translations", [])
         if len(values) != len(batch):
             raise RuntimeError("Translation response did not match subtitle count")
-        translated.extend(str(x).replace("\\n", " ").strip() for x in values)
+        translated.extend(str(x).replace("\n", " ").strip() for x in values)
     is_vtt = output_path.lower().endswith(".vtt")
     output = ["WEBVTT"] if is_vtt else []
     for i, ((timecode, _), text) in enumerate(zip(parsed, translated), 1):
-        output.append((f"{timecode}\\n{text}" if is_vtt else f"{i}\\n{timecode}\\n{text}"))
-    Path(output_path).write_text("\\n\\n".join(output) + "\\n", encoding="utf-8")
+        output.append((f"{timecode}\n{text}" if is_vtt else f"{i}\n{timecode}\n{text}"))
+    Path(output_path).write_text("\n\n".join(output) + "\n", encoding="utf-8")
 
 
 def make_clip(
