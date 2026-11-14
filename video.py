@@ -241,9 +241,9 @@ def build_vtt(words, clip_start: float, clip_end: float, path: str):
         start = max(0.0, group[0]["start"] - clip_start)
         end = max(start + 0.12, group[-1]["end"] - clip_start)
         caption = " ".join(w["word"].strip() for w in group).strip()
-        blocks.append(f"{stamp(start)} --> {stamp(end)}\\n{caption}")
+        blocks.append(f"{stamp(start)} --> {stamp(end)}\n{caption}")
     with open(path, "w", encoding="utf-8") as handle:
-        handle.write("\\n\\n".join(blocks) + "\\n")
+        handle.write("\n\n".join(blocks) + "\n")
 
 
 def render_social_variants(source: str, workdir: str, idx: int, formats=("square", "landscape")) -> dict:
