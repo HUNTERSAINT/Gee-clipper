@@ -63,7 +63,7 @@ def _small_gray(frame, width: int = 640):
 
 def _detect(gray):
     """Return all usable frontal/profile face boxes, not just the largest face."""
-    if _FRONTAL.empty() and _PROFILE.empty():
+    if _FRONTAL.empty():
         return []
     side = max(24, gray.shape[1] // 30)
     found = []
