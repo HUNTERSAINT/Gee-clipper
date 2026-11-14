@@ -168,6 +168,7 @@ gracefully: a missing API key, failed download or LLM error just skips that laye
 | **Commentary + ducking** | `/commentary <script>` (free TTS) or send a voice message. It plays at the start of each clip and the source audio ducks to 15%, rising smoothly afterwards. `/clearcommentary` removes it. |
 | **Commentary frame** | `/layout frame`: blurred backdrop, framed clip and a persistent title card with the clip's hook. |
 | **Split screen** | Send a video with the caption `facecam`, then `/layout split`: source on the top 65%, you on the bottom 35%. The face-cam starts with each clip and loops if shorter. `/clearfacecam` removes it. |
+| **Active speaker** | `/layout speaker`: cuts to whoever is talking (mouth movement). |
 | **Two-speaker stack** | `/layout auto` (or `stack`) stacks both people when two faces are on screen for a good part of the clip; otherwise it follows one face. |
 | **B-roll** | Set `PEXELS_API_KEY` (free) or `BROLL_DIR`. The LLM picks keywords with timestamps; 2.5-3.5 s cutaways fade in over the upper frame, at least 4 s apart. `/broll on\|off`. |
 | **Metadata** | `/metadata on\|off` (default on): `metadata.json` with 3 YouTube titles under 50 characters, per-platform descriptions and hashtags, and a 2-sentence hook script. |
@@ -178,6 +179,31 @@ Captions, title cards and the logo stay out of the platform UI zones (bottom ~25
 
 Notes: output is 720x1280 to keep renders fast and files under Telegram's 50 MB limit. Speaker framing follows
 faces, not voices: the bot does not tell who is talking. Only use footage you have the rights to.
+
+### Caption accuracy
+
+Captions are timed against the clip itself, not the full-video transcript: each clip is normalised so audio and
+video both start at 0 (cuts from YouTube can start mid-container, which shifts every caption), then its own audio is
+transcribed again for word-level timing and text. Silence and intro trimming use those accurate words, so speech is
+never cut mid-word. If the re-transcription fails, the full-video timings are used as a fallback.
+
+### More creator tools
+
+| Feature | Command | What it does |
+|---|---|---|
+| Active-speaker framing | `/layout speaker` | Watches mouth movement on two people and cuts the 9:16 crop to whoever is talking (with hysteresis, so it does not flicker). Falls back to normal framing if two faces are not found. |
+| Intro trim | `/intro on\|off` (default on) | Opens each clip on its first full sentence, skipping filler and half sentences. |
+| A/B hooks | `/ab on\|off` | Also renders Variant B with a different hook; both are sent so you can compare. |
+| Push-in zoom | `/zoom on\|off` | Slow zoom on questions, exclamations and numbers. |
+| Keyword highlight | `/accent <hex>\|off` | Current word in your colour; numbers, money and percentages always green. |
+| Sound effects | `/sfx on\|off` | Soft whoosh on B-roll and pop on zooms, generated locally (no downloads, no licences). |
+| Chapters and summary | `/chapters on\|off` | YouTube-ready chapters plus a 5-point summary for videos of 3+ minutes. |
+| Brand kits | `/brand save\|use\|list\|delete <name>` | Saves layout, caption theme, accent, watermark, logo, outro and effects per channel. |
+| Schedule CSV | automatic | `gee-clipper-schedule.csv` with title, description, hashtags and suggested UTC time per platform. |
+| Quality report | `/quality on\|off` | Per clip: length, hook, speech pace, silence, loudness, peaks, exposure and sharpness, with a score. |
+
+Emoji in captions are not supported: the bundled caption font has no emoji glyphs and subtitle rendering does not
+handle colour emoji reliably.
 
 ## Translated voiceovers
 

@@ -17,6 +17,8 @@ import broll as BR
 import grade as G
 import layouts as L
 import metadata as MD
+import quality as Q
+import sfx as SX
 import timeline as TL
 import music as M
 import video as V
@@ -71,6 +73,13 @@ class Opts:
     voiceover_language: str = "off"
     subtitle_language: str = "off"
     outro_text: str = "Follow for more"
+    trim_intro: bool = True         # open each clip on its first full sentence
+    zoom: bool = True               # push-in on emphasised moments
+    sfx: bool = True                # whoosh / pop at cuts
+    ab_hooks: bool = False          # also render a second hook variant
+    chapters: bool = True           # chapters + summary for the whole video
+    quality: bool = True            # quality report per clip
+    accent: str = ""                # caption highlight colour (hex RGB); empty = theme default
     broll: bool = True              # only used when PEXELS_API_KEY or BROLL_DIR is set
     metadata: bool = True           # metadata.json per clip
     export_timeline: bool = False   # FCPXML package per clip
@@ -87,6 +96,12 @@ def _get(obj, key, default=None):
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def fmt_yt(sec: float) -> str:
+    """YouTube chapter timestamp: M:SS, or H:MM:SS from one hour."""
+    sec = int(sec)
+    return f"{sec // 3600}:{sec % 3600 // 60:02d}:{sec % 60:02d}" if sec >= 3600 else f"{sec // 60}:{sec % 60:02d}"
 
 
 def fmt_ts(sec: float) -> str:
@@ -321,6 +336,36 @@ def transcribe(chunks: list[Path], chunk_sec: int = 600):
         model, lang or "unknown", len(segments), len(words),
     )
     return segments, words, lang
+
+
+def transcribe_clip(path: str, workdir: str, idx: int) -> list[dict]:
+    """Words with timings measured on the clip's own audio (0 = first frame of the clip).
+
+    The full-video transcript can drift or be off by a second or more, which makes captions
+    disagree with the speech. Re-listening to the short clip itself is accurate and cheap.
+    """
+    flac = os.path.join(workdir, f"clipaudio_{idx}.flac")
+    V.run(["ffmpeg", "-y", "-loglevel", "error", "-i", path, "-vn", "-map", "0:a:0", "-ac", "1",
+           "-ar", "16000", "-c:a", "flac", flac])
+    request = {
+        "file": (os.path.basename(flac), open(flac, "rb").read()),
+        "model": C.WHISPER_MODEL,
+        "response_format": "verbose_json",
+        "timestamp_granularities": ["word"],
+        "temperature": 0.0,
+    }
+    if C.WHISPER_LANGUAGE:
+        request["language"] = C.WHISPER_LANGUAGE
+    if C.WHISPER_PROMPT:
+        request["prompt"] = C.WHISPER_PROMPT[:700]
+    resp = with_retry(lambda: groq.audio.transcriptions.create(**request), tries=3)
+    out = []
+    for w in _get(resp, "words", []) or []:
+        s, e = _get(w, "start"), _get(w, "end")
+        token = str(_get(w, "word", "") or "").strip()
+        if token and s is not None and e is not None and float(e) > float(s):
+            out.append({"word": token, "start": float(s), "end": float(e)})
+    return out
 
 
 def _transcript_cache_path(key: str) -> Path:
@@ -659,16 +704,37 @@ def make_clip(
     report(f"Downloading video segment for clip {idx}...")
     raw = download_section(url, clip["start"], clip["end"], workdir, f"raw_{idx}")
     clip = dict(clip)
-    clip_words = words
-    if opts.remove_silence:
+    raw = V.normalize_timeline(raw)
+    dur0 = V.probe(raw)["dur"]
+    # Words relative to the clip's own first frame. Prefer a fresh transcription of the clip itself.
+    shifted = [dict(w, start=w["start"] - clip["start"], end=w["end"] - clip["start"])
+               for w in words if w["end"] > clip["start"] and w["start"] < clip["end"]]
+    clip_words = shifted
+    try:
+        report(f"Syncing captions to the speech for clip {idx}...")
+        fresh = transcribe_clip(raw, workdir, idx)
+        if len(fresh) >= max(3, len(shifted) // 3):
+            clip_words = fresh
+            log.info("Clip %s captions re-aligned words=%s (full-video transcript had %s)",
+                     idx, len(fresh), len(shifted))
+        else:
+            log.warning("Clip %s fresh transcript too short; using full-video timings", idx)
+    except Exception:
+        log.exception("Clip transcription failed; using full-video word timings")
+    clip["start"], clip["end"] = 0.0, dur0
+    if opts.trim_intro:
+        t0 = V.intro_start(clip_words)
+        if t0 > 0.4:
+            clip_words = [w for w in clip_words if w["start"] >= t0 - 0.02]
+            log.info("Clip %s intro trimmed to first strong sentence at %.2fs", idx, t0)
+    if opts.remove_silence or opts.trim_intro:
         try:
             raw, clip_words, compact_duration = V.remove_silence(
-                raw, words, clip["start"], clip["end"]
+                raw, clip_words, 0.0, dur0, max_gap=1.15 if opts.remove_silence else 1e9
             )
             clip["start"], clip["end"] = 0.0, compact_duration
         except Exception:
             log.exception("Silence trimming failed; keeping original clip timing")
-            clip_words = words
     report(f"Analysing video framing for clip {idx}...")
     log.info("Clip %s stage=probe starting", idx)
     meta = V.probe(raw)
@@ -680,7 +746,7 @@ def make_clip(
         V.build_ass(
             clip_words, clip["start"], clip["end"], os.path.join(workdir, ass_name),
             hook=hook_text if (opts.hook and opts.layout != "frame") else None, captions=opts.captions,
-            watermark=opts.watermark, caption_style=opts.caption_style,
+            watermark=opts.watermark, caption_style=opts.caption_style, accent=opts.accent or None,
             banner=hook_text if opts.layout == "frame" else None,
         )
 
@@ -691,6 +757,13 @@ def make_clip(
         plan = {"kind": "frame"}
     elif opts.layout == "split":
         plan = {"kind": "split", "cx": L.face_center(raw)}
+    elif wide and opts.layout == "speaker":
+        try:
+            plan = L.speaker_plan(raw, meta)
+            if plan:
+                log.info("Clip %s active-speaker framing cuts=%s", idx, plan["speaker_cuts"])
+        except Exception:
+            log.exception("Active-speaker detection failed")
     elif wide and opts.layout in ("auto", "stack"):
         try:
             two = L.two_faces(raw)
@@ -699,7 +772,7 @@ def make_clip(
         except Exception:
             log.exception("Two-speaker detection failed")
     if plan is None:
-        plan = V.plan_layout(raw, meta, "auto" if opts.layout == "stack" else opts.layout)
+        plan = V.plan_layout(raw, meta, "auto" if opts.layout in ("stack", "speaker") else opts.layout)
     log.info("Clip %s stage=layout success kind=%s", idx, plan["kind"])
     out = os.path.join(workdir, f"clip_{idx}.mp4")
     report(f"Rendering vertical video for clip {idx}...")
@@ -737,7 +810,22 @@ def make_clip(
         rel = [dict(w, start=w["start"] - clip["start"], end=w["end"] - clip["start"])
                for w in clip_words if clip["start"] - 0.05 <= w["start"] <= clip["end"] + 0.3]
         broll = BR.build(rel, V.probe(raw)["dur"], workdir, idx, llm_json)
-    extras = dict(broll=broll, commentary_path=commentary_path, facecam_path=opts.facecam_path or None)
+    dur_now = V.probe(raw)["dur"]
+    zoom = []
+    if opts.zoom:
+        try:
+            zoom = V.zoom_moments(clip_words, dur_now, avoid=[(b["t"] - 0.3, b["t"] + b["d"]) for b in broll])
+        except Exception:
+            log.exception("Zoom planning failed")
+    sfx_path = None
+    if opts.sfx:
+        try:
+            sfx_path = SX.track([(b["t"], "whoosh") for b in broll] + [(t, "pop") for t in zoom],
+                                dur_now, workdir, idx)
+        except Exception:
+            log.exception("Sound effects failed; continuing without them")
+    extras = dict(broll=broll, commentary_path=commentary_path, facecam_path=opts.facecam_path or None,
+                  zoom=zoom, sfx_path=sfx_path)
     grade_vf = None
     if opts.grade:
         try:
@@ -760,22 +848,29 @@ def make_clip(
                 track = M.pick(music_mood, energy, used_tracks)
             except Exception:
                 log.exception("Built-in music selection failed; continuing without music")
-    try:
-        V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=track, logo_path=opts.logo_path, voiceover_path=voiceover_path, **extras)
-    except RuntimeError:
-        if not track:
-            raise
-        log.exception("Render with music failed; retrying without music")
-        track = None
+    common = dict(logo_path=opts.logo_path, voiceover_path=voiceover_path)
+    plain = dict(extras, zoom=None, sfx_path=None)
+    ladder = [
+        ("full", dict(grade_vf=grade_vf, music=track, **extras)),
+        ("no zoom/sfx", dict(grade_vf=grade_vf, music=track, **plain)),
+        ("no music", dict(grade_vf=grade_vf, music=None, **plain)),
+        ("plain", dict(grade_vf=None, music=None, **dict(plain, broll=[]))),
+    ]
+    for n, (label, kw) in enumerate(ladder):
         try:
-            V.render(raw, plan, ass_name, out, workdir, grade_vf=grade_vf, music=None, logo_path=opts.logo_path, voiceover_path=voiceover_path, **extras)
+            V.render(raw, plan, ass_name, out, workdir, **kw, **common)
+            if n:
+                log.warning("Clip %s rendered with reduced features: %s", idx, label)
+            grade_vf, track = kw["grade_vf"], kw["music"]
+            extras = {k: kw[k] for k in extras}
+            break
         except RuntimeError:
-            log.exception("Render with grade failed; retrying plain")
-            grade_vf = None
-            V.render(raw, plan, ass_name, out, workdir, grade_vf=None, music=None, logo_path=opts.logo_path, voiceover_path=voiceover_path, **extras)
+            log.exception("Render attempt '%s' failed", label)
+            if n == len(ladder) - 1:
+                raise
     log.info("Clip %s stage=render success bytes=%s", idx, os.path.getsize(out))
     if os.path.getsize(out) > C.TG_FILE_LIMIT:
-        V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track, logo_path=opts.logo_path, voiceover_path=voiceover_path, **extras)
+        V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track, **extras, **common)
     if opts.outro_text:
         try:
             out = V.append_outro(out, workdir, idx, opts.outro_text)
@@ -811,6 +906,36 @@ def make_clip(
         log.info("Clip %s stage=thumbnails success", idx)
     except Exception:
         log.exception("thumbnail generation failed")
+    if opts.ab_hooks:
+        try:
+            alt = str(llm_json(
+                "Write ONE alternative on-screen hook for a short video: 2-5 punchy words, a different angle "
+                'from the current hook, no emoji or hashtags. Return JSON only: {"hook":"..."}.',
+                f"Current hook: {hook_text}\nTranscript: {spoken_text[:2500]}").get("hook", "")).strip()
+            if alt and alt.lower() != hook_text.lower():
+                ass_b = f"capb_{idx}.ass"
+                V.build_ass(
+                    clip_words, clip["start"], clip["end"], os.path.join(workdir, ass_b),
+                    hook=alt if opts.layout != "frame" else None, captions=opts.captions,
+                    watermark=opts.watermark, caption_style=opts.caption_style, accent=opts.accent or None,
+                    banner=alt if opts.layout == "frame" else None)
+                out_b = os.path.join(workdir, f"clip_{idx}_B.mp4")
+                V.render(raw, plan, ass_b, out_b, workdir, grade_vf=grade_vf, music=track, **extras, **common)
+                if opts.outro_text:
+                    try:
+                        out_b = V.append_outro(out_b, workdir, f"{idx}b", opts.outro_text)
+                    except Exception:
+                        log.exception("Outro for variant B failed")
+                result["variant_b"], result["hook_b"], result["hook_a"] = out_b, alt, hook_text
+        except Exception:
+            log.exception("A/B hook variant failed; keeping variant A only")
+    if opts.quality:
+        try:
+            result["quality"] = Q.report(
+                out, clip_words, V.probe(out)["dur"], hook_text, clip.get("score"),
+                min_sec=min(15, C.CLIP_MIN_SEC), max_sec=C.CLIP_MAX_SEC + 8)
+        except Exception:
+            log.exception("Quality report failed")
     if opts.metadata:
         try:
             result["metadata"] = MD.write(
@@ -879,6 +1004,31 @@ def summarize_transcript(segments) -> str:
             section.append("Key takeaways: " + " • ".join(str(x) for x in takeaways[:5]))
         reports.append("\n".join(x for x in section if x))
     return "\n\n".join(reports)
+
+
+def chapters_and_summary(segments, total_sec: float) -> dict:
+    """{"summary": [5 bullet strings], "chapters": [(seconds, title)]} for the whole video."""
+    lines = [f"[{fmt_ts(s['start'])}] {s['text']}" for s in segments]
+    text = "\n".join(lines)
+    if len(text) > 14000:  # sample evenly so the whole video is represented
+        step = len(lines) / 220
+        text = "\n".join(lines[int(i * step)] for i in range(220))[:14000]
+    data = llm_json(
+        "You write YouTube chapters and a summary from a timed transcript. Return JSON only: "
+        '{"summary":["5 short bullet points"],"chapters":[{"t":seconds,"title":"3-6 words"}]}. '
+        "6-12 chapters, the first at t=0, each at least 30 seconds apart, in order, titles specific.",
+        text)
+    chapters, last = [], -999.0
+    for ch in sorted(data.get("chapters", []), key=lambda x: float(x.get("t", 0))):
+        try:
+            t, title = float(ch["t"]), str(ch["title"]).strip()[:60]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if title and 0 <= t < total_sec and t - last >= 30:
+            chapters.append((0.0 if not chapters else t, title))
+            last = t
+    return {"summary": [str(x).strip() for x in data.get("summary", []) if str(x).strip()][:5],
+            "chapters": chapters if len(chapters) >= 3 else []}
 
 
 def generate_title_ideas(segments) -> list[str]:

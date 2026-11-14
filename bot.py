@@ -22,6 +22,9 @@ from telegram.ext import (
 
 import config as C
 import broll as BR
+import json
+import quality as Q
+import schedule as SCH
 import core
 import storage as S
 import yt_dlp
@@ -50,7 +53,15 @@ HELP = (
     "Add a number to choose how many: https://youtu.be/xxxx 5\n\n"
     "Settings:\n"
     "/clips 3 - how many clips\n"
-    "/layout auto|crop|blur|frame|split|stack - auto follows the speaker's face (or stacks two speakers). frame = blurred backdrop + title card, split = source over your face-cam\n"
+    "/layout auto|crop|blur|frame|split|stack|speaker - auto follows the face (or stacks two speakers); speaker cuts to whoever is talking. frame = blurred backdrop + title card, split = source over your face-cam\n"
+    "/intro on|off - open each clip on its first full sentence\n"
+    "/zoom on|off - slow push-in on questions, exclamations and numbers\n"
+    "/sfx on|off - subtle whoosh/pop at cutaways and zooms\n"
+    "/ab on|off - also render a second hook title (Variant B) to compare\n"
+    "/chapters on|off - chapters + 5-point summary for the full video\n"
+    "/quality on|off - quality report per clip\n"
+    "/accent <hex>|off - caption highlight colour\n"
+    "/brand save|use|list|delete <name> - saved looks per channel\n"
     "/broll on|off - stock cutaways on keywords (needs PEXELS_API_KEY)\n"
     "/metadata on|off - metadata.json with titles and hashtags for YouTube, Facebook, Instagram, TikTok\n"
     "/timeline on|off - editable FCPXML timeline pack for DaVinci Resolve / Final Cut\n"
@@ -106,6 +117,9 @@ def summary(o: core.Opts) -> str:
         + f"\nOutro: {o.outro_text or 'off'}"
         + f"\nCustom soundtrack: {'uploaded' if o.music_path else 'automatic library'}"
         + f"\nB-roll: {'on' if o.broll else 'off'}{'' if BR.available() else ' (no PEXELS_API_KEY)'}"
+        + f"\nIntro trim: {'on' if o.trim_intro else 'off'} | Zoom: {'on' if o.zoom else 'off'} | SFX: {'on' if o.sfx else 'off'}"
+        + f"\nA/B hooks: {'on' if o.ab_hooks else 'off'} | Chapters: {'on' if o.chapters else 'off'} | Quality: {'on' if o.quality else 'off'}"
+        + f"\nCaption accent: {o.accent or 'theme default'}"
         + f"\nMetadata file: {'on' if o.metadata else 'off'}"
         + f"\nTimeline export: {'on' if o.export_timeline else 'off'}"
         + f"\nCommentary: {'recording' if o.commentary_path else ('script' if o.commentary_text else 'off')}"
@@ -201,7 +215,7 @@ async def settings_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     action, value = q.data.split(":", 1)
     if action == "toggle" and value in ("captions", "hook", "music", "grade"):
         setattr(o, value, not getattr(o, value))
-    elif action == "layout" and value in ("auto", "crop", "blur", "frame", "split", "stack"):
+    elif action == "layout" and value in ("auto", "crop", "blur", "frame", "split", "stack", "speaker"):
         o.layout = value
     elif action == "clips" and value.isdigit():
         o.clips = max(1, min(int(value), C.MAX_CLIPS))
@@ -445,6 +459,44 @@ async def clearfacecam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if o.layout == "split":
         o.layout = "auto"
     await update.message.reply_text("Face-cam removed.")
+
+
+BRAND_FIELDS = ("layout", "captions", "hook", "music", "grade", "watermark", "caption_style", "outro_text",
+                "accent", "zoom", "sfx", "trim_intro", "broll", "export_formats", "remove_silence")
+
+
+async def brand_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Saved looks per channel: /brand save|use|list|delete <name>."""
+    o = get_opts(ctx)
+    kits = ctx.user_data.setdefault("brands", {})
+    sub = (ctx.args[0].lower() if ctx.args else "")
+    name = re.sub(r"[^\w -]", "", " ".join(ctx.args[1:])).strip().lower()[:24]
+    if sub == "list" or not sub:
+        await update.message.reply_text(
+            ("Saved looks: " + ", ".join(sorted(kits)) if kits else "No saved looks yet.")
+            + "\nUsage: /brand save <name> | use <name> | delete <name>")
+    elif sub == "save" and name:
+        kit = {k: getattr(o, k) for k in BRAND_FIELDS}
+        if o.logo_path and os.path.isfile(o.logo_path):
+            dest = _asset_path(update, "brandlogo_" + re.sub(r"\W", "_", name), "png")
+            shutil.copy(o.logo_path, dest)
+            kit["logo_path"] = dest
+        kits[name] = kit
+        await update.message.reply_text(f"Saved look '{name}': layout, captions, theme, watermark, logo, outro and effects.")
+    elif sub == "use" and name in kits:
+        for k, v in kits[name].items():
+            setattr(o, k, v)
+        await update.message.reply_text(f"Using '{name}'.\n" + summary(o))
+    elif sub == "delete" and name in kits:
+        kit = kits.pop(name)
+        if kit.get("logo_path") and "brandlogo_" in kit["logo_path"]:
+            try:
+                os.remove(kit["logo_path"])
+            except OSError:
+                pass
+        await update.message.reply_text(f"Deleted '{name}'.")
+    else:
+        await update.message.reply_text("Usage: /brand save <name> | use <name> | list | delete <name>")
 
 
 async def clearlogo_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -765,15 +817,24 @@ async def settings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
     elif cmd == "clips" and arg.isdigit():
         o.clips = max(1, min(int(arg), C.MAX_CLIPS))
-    elif cmd == "layout" and arg in ("auto", "crop", "blur", "frame", "split", "stack"):
+    elif cmd == "layout" and arg in ("auto", "crop", "blur", "frame", "split", "stack", "speaker"):
         o.layout = arg
-    elif cmd in ("captions", "hook", "music", "grade", "broll", "metadata", "timeline") and arg in ("on", "off"):
-        cmd = "export_timeline" if cmd == "timeline" else cmd
+    elif cmd == "accent" and (arg == "off" or re.fullmatch(r"#?[0-9a-f]{6}", arg)):
+        o.accent = "" if arg == "off" else arg.lstrip("#").upper()
+    elif cmd in ("captions", "hook", "music", "grade", "broll", "metadata", "timeline", "intro", "zoom", "sfx", "ab", "chapters", "quality") and arg in ("on", "off"):
+        cmd = {"timeline": "export_timeline", "intro": "trim_intro", "ab": "ab_hooks"}.get(cmd, cmd)
         setattr(o, cmd, arg == "on")
     else:
         usage = {
             "clips": f"/clips 1-{C.MAX_CLIPS}",
-            "layout": "/layout auto|crop|blur|frame|split|stack",
+            "layout": "/layout auto|crop|blur|frame|split|stack|speaker",
+            "intro": "/intro on|off",
+            "zoom": "/zoom on|off",
+            "sfx": "/sfx on|off",
+            "ab": "/ab on|off",
+            "chapters": "/chapters on|off",
+            "quality": "/quality on|off",
+            "accent": "/accent FFD400 (hex colour) or /accent off",
             "broll": "/broll on|off",
             "metadata": "/metadata on|off",
             "timeline": "/timeline on|off",
@@ -907,6 +968,7 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
             await step("Couldn't find good clip moments in this video.")
             return
 
+        schedule_items: list = []
         used_tracks: dict = {}  # keeps each clip of this video on a different song
         for i, clip in enumerate(clips, 1):
             await step(f"Preparing clip {i}/{len(clips)}...")
@@ -973,6 +1035,24 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                             await msg.reply_document(subtitle_file, filename=f"gee-clipper-{i}.srt", caption="📝 Subtitles (SRT)")
                     except Exception:
                         log.exception("subtitle file send failed")
+                if res.get("variant_b") and os.path.isfile(res["variant_b"]):
+                    try:
+                        if os.path.getsize(res["variant_b"]) <= C.TG_FILE_LIMIT:
+                            with open(res["variant_b"], "rb") as vb:
+                                await msg.reply_video(vb, caption=f"🅱️ Variant B hook: {res['hook_b']}\n(A was: {res['hook_a']})",
+                                                      supports_streaming=True, read_timeout=180, write_timeout=180)
+                    except Exception:
+                        log.exception("variant B send failed")
+                if res.get("quality"):
+                    try:
+                        await msg.reply_text(Q.text(res["quality"]))
+                    except Exception:
+                        log.exception("quality report send failed")
+                if res.get("metadata"):
+                    try:
+                        schedule_items.append({"file": f"gee-clipper-{i}.mp4", "metadata": json.load(open(res["metadata"], encoding="utf-8"))})
+                    except Exception:
+                        log.exception("schedule row failed")
                 for key, label in (("metadata", "🧾 metadata.json: titles, hashtags per platform, hook script"),
                                    ("timeline", "🎞 Editable timeline (FCPXML + media + captions)")):
                     if res.get(key) and os.path.isfile(res[key]):
@@ -1001,6 +1081,27 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                 log.exception("clip %s failed", i)
                 await msg.reply_text(f"Clip {i} failed: {friendly_error(e)}")
 
+        if schedule_items:
+            try:
+                csv_path = SCH.build_csv(os.path.join(workdir, "gee-clipper-schedule.csv"), schedule_items)
+                with open(csv_path, "rb") as fh:
+                    await msg.reply_document(fh, filename="gee-clipper-schedule.csv",
+                                             caption="📅 Titles, descriptions, hashtags and suggested posting times (UTC) for every platform")
+            except Exception:
+                log.exception("schedule CSV failed")
+        if opts.chapters and sent and (info.get("duration") or 0) >= 180:
+            try:
+                cs = await asyncio.to_thread(core.chapters_and_summary, segments, info.get("duration") or 0)
+                parts = []
+                if cs["chapters"]:
+                    parts.append("📑 Chapters (paste into your video description or pinned comment):\n"
+                                 + "\n".join(f"{core.fmt_yt(t)} {title}" for t, title in cs["chapters"]))
+                if cs["summary"]:
+                    parts.append("📝 Summary:\n" + "\n".join(f"• {p}" for p in cs["summary"]))
+                if parts:
+                    await msg.reply_text("\n\n".join(parts)[:4000])
+            except Exception:
+                log.exception("chapters/summary failed")
         job_status = "completed" if sent else "no clips"
         S.update_job(job_id, status=job_status, clips=sent)
         if delivery_files:
@@ -1041,6 +1142,8 @@ async def post_init(app: Application):
             BotCommand("layout", "auto|crop|blur|frame|split|stack"),
             BotCommand("commentary", "Your spoken intro (ducks source audio)"),
             BotCommand("timeline", "on | off: editable FCPXML pack"),
+            BotCommand("brand", "Save / use a channel look"),
+            BotCommand("ab", "on | off: second hook variant"),
             BotCommand("captions", "on | off"),
             BotCommand("hook", "on | off"),
             BotCommand("music", "on | off"),
@@ -1128,6 +1231,7 @@ def main():
     app.add_handler(CallbackQueryHandler(favorite_callback, pattern=r"^fav:"))
     app.add_handler(CommandHandler("watermark", watermark_cmd))
     app.add_handler(CommandHandler("clearlogo", clearlogo_cmd))
+    app.add_handler(CommandHandler("brand", brand_cmd))
     app.add_handler(CommandHandler("commentary", commentary_cmd))
     app.add_handler(CommandHandler("clearcommentary", clearcommentary_cmd))
     app.add_handler(CommandHandler("clearfacecam", clearfacecam_cmd))
@@ -1146,7 +1250,7 @@ def main():
     app.add_handler(CommandHandler("block", block_cmd))
     app.add_handler(CommandHandler("unblock", unblock_cmd))
     app.add_handler(
-        CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade", "broll", "metadata", "timeline"], settings_cmd)
+        CommandHandler(["settings", "clips", "layout", "captions", "hook", "music", "grade", "broll", "metadata", "timeline", "intro", "zoom", "sfx", "ab", "chapters", "quality", "accent"], settings_cmd)
     )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
     webhook_base = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")

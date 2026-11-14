@@ -220,6 +220,19 @@ def _group_words(ws, max_words: int = 5, max_chars: int = 28):
     return groups
 
 
+def _bgr(rgb: str) -> str:
+    rgb = re.sub(r"[^0-9A-Fa-f]", "", rgb or "")[:6].rjust(6, "0")
+    return rgb[4:6] + rgb[2:4] + rgb[0:2]
+
+
+def _num_style(word: str) -> str:
+    """Numbers, money and percentages stay green so the key figure is always easy to spot."""
+    t = _ass_text(word)
+    if any(c.isdigit() for c in word) or "$" in word or "%" in word:
+        return r"{\c&H7CE86A&}" + t + r"{\c&HFFFFFF&}"
+    return t
+
+
 def _ass_text(s: str) -> str:
     return re.sub(r"[{}\\]", "", s).upper()
 
@@ -255,6 +268,73 @@ def build_srt(words, clip_start: float, clip_end: float, path: str):
         handle.write("\n\n".join(blocks) + ("\n" if blocks else ""))
 
 
+_FILLERS = {"um", "uh", "uhh", "umm", "erm", "so", "and", "but", "like", "okay", "ok", "well", "yeah", "right", "i mean"}
+
+
+def intro_start(words, max_search: float = 6.0) -> float:
+    """Start time of the first real sentence, so a clip opens on a strong line instead of
+    a half sentence or filler. Returns 0 when the clip already opens well."""
+    for i, w in enumerate(words):
+        if w["start"] > max_search:
+            break
+        token = w["word"].strip()
+        prev = words[i - 1]["word"].rstrip() if i else ""
+        starts_sentence = token[:1].isupper() and (i == 0 or prev.endswith((".", "?", "!")))
+        if starts_sentence and token.lower().strip(",.") not in _FILLERS:
+            return 0.0 if i == 0 else float(w["start"])
+    return 0.0
+
+
+def zoom_moments(words, dur: float, avoid=(), max_n: int = 4, gap: float = 3.5):
+    """Times of emphasised lines (questions, exclamations, numbers) for a short push-in."""
+    out, last = [], -99.0
+    sentence_start = 0
+    for i, w in enumerate(words):
+        t = w["word"].rstrip()
+        strong = t.endswith(("!", "?")) or any(c.isdigit() for c in t) or "%" in t or "$" in t
+        if strong:
+            ts = float(words[sentence_start]["start"]) if t.endswith(("!", "?")) else float(w["start"])
+            if (1.0 <= ts <= dur - 2.5 and ts - last >= gap
+                    and not any(a <= ts <= b for a, b in avoid)):
+                out.append(round(ts, 2))
+                last = ts
+        if t.endswith((".", "?", "!")):
+            sentence_start = min(i + 1, len(words) - 1)
+        if len(out) >= max_n:
+            break
+    return out
+
+
+def _stream_start(path: str, kind: str) -> float:
+    p = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", kind, "-show_entries", "stream=start_time",
+         "-of", "csv=p=0", path], capture_output=True, text=True)
+    try:
+        return float(p.stdout.split()[0])
+    except (IndexError, ValueError):
+        return 0.0
+
+
+def normalize_timeline(path: str) -> str:
+    """Make audio and video both start at exactly 0. Cuts from yt-dlp can start a fraction of a
+    second (or more) into the container, which shifts every caption against the speech."""
+    vs, a_start = _stream_start(path, "v:0"), _stream_start(path, "a:0")
+    if abs(vs) < 0.02 and abs(a_start) < 0.02:
+        return path
+    out = os.path.splitext(path)[0] + "_t0.mp4"
+    has_audio = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type",
+         "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip() != ""
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", path, "-vf", "setpts=PTS-STARTPTS"]
+    if has_audio:
+        cmd += ["-af", "asetpts=PTS-STARTPTS"]
+    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "160k",
+            "-movflags", "+faststart", out]
+    run(cmd)
+    log.info("Timeline normalised video_start=%.3f audio_start=%.3f", vs, a_start)
+    return out
+
+
 def remove_silence(path: str, words: list, clip_start: float, clip_end: float,
                   max_gap: float = 1.15, padding: float = 0.18):
     """Trim long transcript gaps while preserving natural breaths and remap word timestamps."""
@@ -271,7 +351,7 @@ def remove_silence(path: str, words: list, clip_start: float, clip_end: float,
             spans.append((start, end))
     original = clip_end - clip_start
     kept = sum(max(0.0, b - a) for a, b in spans)
-    if len(spans) < 2 or original - kept < 1.5:
+    if len(spans) < 1 or original - kept < 0.8:
         return path, words, original
     has_audio = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
@@ -368,7 +448,7 @@ def render_social_variants(source: str, workdir: str, idx: int, formats=("square
 
 
 def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
-              captions=True, watermark=None, caption_style="bold", banner=None):
+              captions=True, watermark=None, caption_style="bold", banner=None, accent=None):
     header = (
         "[Script Info]\nScriptType: v4.00+\n"
         f"PlayResX: {OUT_W}\nPlayResY: {OUT_H}\nWrapStyle: 0\n\n"
@@ -415,9 +495,10 @@ def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
                     if nxt_group is not None and nxt_group - clip_start - end < 0.4:
                         end = nxt_group - clip_start
                 end = max(end, start + 0.05)
+                hi = _bgr(accent) if accent else {"bold": "00FFFF", "classic": "0000FF", "neon": "00FFFF", "minimal": "00D7FF"}.get(caption_style, "00FFFF")
                 text = " ".join(
-                    (r"{\c&H" + {"bold": "00FFFF", "classic": "0000FF", "neon": "00FFFF", "minimal": "00D7FF"}.get(caption_style, "00FFFF") + "&}" + _ass_text(x["word"]) + r"{\c&HFFFFFF&}")
-                    if k == j else _ass_text(x["word"])
+                    (r"{\c&H" + hi + "&}" + _ass_text(x["word"]) + r"{\c&HFFFFFF&}")
+                    if k == j else _num_style(x["word"])
                     for k, x in enumerate(group)
                 )
                 lines.append(
@@ -434,7 +515,8 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
            crf: int = 24, grade_vf: str | None = None, music=None,
            logo_path: str | None = None, voiceover_path: str | None = None,
            broll: list | None = None, commentary_path: str | None = None,
-           facecam_path: str | None = None) -> None:
+           facecam_path: str | None = None,
+           zoom: list | None = None, sfx_path: str | None = None) -> None:
     grade = ("," + grade_vf) if grade_vf else ""
     kind = plan["kind"]
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", raw]
@@ -460,6 +542,8 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
         facecam_input = add_input("-stream_loop", "-1", "-i", facecam_path)
     elif kind == "split":
         kind = plan["kind"] = "frame"  # no face-cam supplied: fall back to the framed preset
+
+    sfx_input = add_input("-i", sfx_path) if sfx_path and os.path.isfile(sfx_path) else None
 
     # ---- picture: base layout -> [vbase] ------------------------------------
     if kind == "crop":
@@ -489,8 +573,18 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1{grade}[vbase]"
         )
 
-    # ---- B-roll cutaways above the speaker, under captions ------------------
+    # ---- subtle push-in on emphasised moments ---------------------------------
     label = "[vbase]"
+    if zoom and kind not in ("stack", "split"):
+        z = "+".join(f"max(0,min(min((t-{a:.2f})/0.5,({a:.2f}+1.3-t)/0.8),1))" for a in zoom)
+        video_graph += (
+            f";[vbase]scale=w='trunc({OUT_W}*(1+0.07*min(1,{z}))/2)*2':"
+            f"h='trunc({OUT_H}*(1+0.07*min(1,{z}))/2)*2':eval=frame:flags=bilinear,"
+            f"crop={OUT_W}:{OUT_H},setsar=1[vzoom]"
+        )
+        label = "[vzoom]"
+
+    # ---- B-roll cutaways above the speaker, under captions ------------------
     for i, b in enumerate([b for b in (broll or []) if os.path.isfile(b.get("path", ""))]):
         bi = add_input("-i", b["path"])
         s0, e0 = b["t"], b["t"] + b["d"]
@@ -562,6 +656,18 @@ def render(raw: str, plan: dict, ass_name: str | None, out: str, workdir: str,
     else:
         graph = video_graph
         maps = ["-map", video_label] + (["-map", "0:a:0"] if has_audio else [])
+    if sfx_input is not None:
+        if "[aout]" in graph:
+            graph = graph.rsplit("[aout]", 1)[0] + "[amain]"
+            tail = (f";[amain][{sfx_input}:a:0]amix=inputs=2:duration=first:dropout_transition=0:"
+                    "weights='1 1',volume=2,alimiter=limit=0.95[aout]")
+        elif has_audio:
+            tail = (f";[0:a:0]aresample=48000[amain];[amain][{sfx_input}:a:0]amix=inputs=2:duration=first:"
+                    "dropout_transition=0:weights='1 1',volume=2,alimiter=limit=0.95[aout]")
+        else:
+            tail = f";[{sfx_input}:a:0]anull[aout]"
+        graph += tail
+        maps = ["-map", video_label, "-map", "[aout]", "-t", f"{dur:.2f}"]
     if "-t" not in maps:
         maps += ["-t", f"{dur:.2f}"]  # looped inputs (face-cam, music) must not run forever
     cmd += ["-filter_complex", graph] + maps + [
