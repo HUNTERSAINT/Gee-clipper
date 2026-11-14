@@ -93,7 +93,7 @@ def summary(o: core.Opts) -> str:
         f"Colour grade: {'on' if o.grade else 'off'}"
         + f"\nCaption theme: {o.caption_style}"
         + f"\nVoiceover: {o.voiceover_language}"
-        + f"\nWatermark: {o.watermark or 'off'}
+        + f"\nWatermark: {o.watermark or 'off'}"
         + f"\nExports: {o.export_formats}"
         + f"\nSilence removal: {'on' if o.remove_silence else 'off'}"
         + f"\nOutro: {o.outro_text or 'off'}"
