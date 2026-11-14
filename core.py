@@ -500,6 +500,12 @@ def make_clip(
 
     result = {"video": out, "layout": plan["kind"], "track": track[1] if track else None}
     try:
+        srt_path = os.path.join(workdir, f"subtitles_{idx}.srt")
+        V.build_srt(words, clip["start"], clip["end"], srt_path)
+        result["subtitles"] = srt_path
+    except Exception:
+        log.exception("subtitle export failed")
+    try:
         report(f"Creating thumbnails for clip {idx}...")
         log.info("Clip %s stage=thumbnails starting", idx)
         result |= V.make_thumbnails(raw, hook_text, workdir, idx)
