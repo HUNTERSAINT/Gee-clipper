@@ -211,9 +211,9 @@ def build_srt(words, clip_start: float, clip_end: float, path: str):
         start = max(0.0, group[0]["start"] - clip_start)
         end = max(start + 0.12, group[-1]["end"] - clip_start)
         text = " ".join(w["word"].strip() for w in group).strip()
-        blocks.append(f"{index}\\n{_srt_time(start)} --> {_srt_time(end)}\\n{text}")
+        blocks.append(f"{index}\n{_srt_time(start)} --> {_srt_time(end)}\n{text}")
     with open(path, "w", encoding="utf-8") as handle:
-        handle.write("\\n\\n".join(blocks) + ("\\n" if blocks else ""))
+        handle.write("\n\n".join(blocks) + ("\n" if blocks else ""))
 
 
 def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
