@@ -17,7 +17,7 @@ import music as M
 import video as V
 import voiceover as VO
 
-log = logging.getLogger("clipper.core")
+log = logging.getLogger("clipper.core")\n\nTRANSCRIPT_CACHE_VERSION = "asr4"
 
 
 def _safe_ydl_message(message) -> str:
@@ -163,28 +163,53 @@ def download_audio(url: str, workdir: str) -> str:
         raise
 
 
-def split_audio(src: str, workdir: str, chunk_sec: int = 900) -> list[Path]:
-    """16 kHz mono 32 kbps mp3 chunks (~3.6 MB each, under Groq's 25 MB cap)."""
+def split_audio(src: str, workdir: str, chunk_sec: int = 600) -> list[Path]:
+    """Create 16 kHz mono lossless FLAC chunks, with a safe compressed fallback.
+
+    Groq recommends FLAC for audio downsampling. Ten-minute chunks keep uploads
+    comfortably below the free-tier 25 MB request limit in typical speech audio.
+    """
     V.run(
         [
-            "ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vn", "-ac", "1",
-            "-ar", "16000", "-b:a", "32k", "-f", "segment",
-            "-segment_time", str(chunk_sec), "-reset_timestamps", "1", "seg_%03d.mp3",
+            "ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vn", "-map", "0:a:0",
+            "-ac", "1", "-ar", "16000", "-c:a", "flac", "-compression_level", "8",
+            "-f", "segment", "-segment_time", str(chunk_sec), "-reset_timestamps", "1",
+            "-segment_format", "flac", "seg_%03d.flac",
         ],
         cwd=workdir,
     )
-    return sorted(Path(workdir).glob("seg_*.mp3"))
+    chunks = sorted(Path(workdir).glob("seg_*.flac"))
+    if not chunks:
+        raise RuntimeError("Audio extraction produced no transcription chunks")
+
+    ready = []
+    max_upload = 24 * 1024 * 1024  # stay below Groq's 25 MB free-tier limit
+    for chunk in chunks:
+        if chunk.stat().st_size <= max_upload:
+            ready.append(chunk)
+            continue
+        compressed = chunk.with_suffix(".mp3")
+        V.run([
+            "ffmpeg", "-y", "-loglevel", "error", "-i", str(chunk), "-vn",
+            "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "64k",
+            str(compressed),
+        ])
+        if compressed.stat().st_size > 25 * 1024 * 1024:
+            raise RuntimeError("A transcription audio chunk exceeds Groq's 25 MB upload limit")
+        chunk.unlink(missing_ok=True)
+        ready.append(compressed)
+    return ready
 
 
 def _fallback_word_timestamps(segment: dict) -> list[dict]:
     """Build approximate word cues only when the provider omits word timestamps."""
     text = str(segment.get("text") or "").strip()
-    tokens = re.findall(r"\\S+", text)
+    tokens = re.findall(r"\S+", text)
     start, end = float(segment.get("start") or 0), float(segment.get("end") or 0)
     if not tokens or end <= start:
         return []
     # Allocate time by token length so long words do not flash as quickly as short ones.
-    weights = [max(1, len(re.sub(r"\\W", "", token))) for token in tokens]
+    weights = [max(1, len(re.sub(r"\W", "", token))) for token in tokens]
     total = sum(weights)
     cursor, output = start, []
     for token, weight in zip(tokens, weights):
@@ -194,29 +219,51 @@ def _fallback_word_timestamps(segment: dict) -> list[dict]:
     return output
 
 
-def transcribe(chunks: list[Path], chunk_sec: int = 900):
+def transcribe(chunks: list[Path], chunk_sec: int = 600):
+    """Transcribe higher-quality audio and preserve word-level timestamps."""
     segments, words, lang = [], [], None
+    model = C.WHISPER_MODEL
+    log.info(
+        "Whisper transcription starting model=%s configured_language=%s chunks=%s",
+        model, C.WHISPER_LANGUAGE or "auto", len(chunks),
+    )
     for idx, chunk in enumerate(chunks):
         offset = idx * chunk_sec
-        data = chunk.read_bytes()
-        resp = with_retry(
-            lambda: groq.audio.transcriptions.create(
-                file=(chunk.name, data),
-                model=C.WHISPER_MODEL,
-                response_format="verbose_json",
-                timestamp_granularities=["word", "segment"],
-            )
-        )
+        request = {
+            "file": (chunk.name, chunk.read_bytes()),
+            "model": model,
+            "response_format": "verbose_json",
+            "timestamp_granularities": ["word", "segment"],
+            "temperature": 0.0,
+        }
+        if C.WHISPER_LANGUAGE:
+            request["language"] = C.WHISPER_LANGUAGE
+        # Give later chunks a little preceding transcript context for names and phrasing.
+        context_parts = []
+        if C.WHISPER_PROMPT:
+            context_parts.append(C.WHISPER_PROMPT)
+        if segments:
+            context_parts.append(" ".join(s["text"] for s in segments[-3:] if s["text"])[-450:])
+        context = "\n".join(x for x in context_parts if x).strip()
+        if context:
+            request["prompt"] = context[:900]
+
+        resp = with_retry(lambda: groq.audio.transcriptions.create(**request))
         lang = lang or _get(resp, "language")
         chunk_segments = []
         for s in _get(resp, "segments", []) or []:
+            text = str(_get(s, "text", "") or "").strip()
+            if not text:
+                continue
             item = {
                 "start": float(_get(s, "start") or 0) + offset,
                 "end": float(_get(s, "end") or 0) + offset,
-                "text": str(_get(s, "text", "") or "").strip(),
+                "text": text,
             }
-            segments.append(item)
-            chunk_segments.append(item)
+            if item["end"] > item["start"]:
+                segments.append(item)
+                chunk_segments.append(item)
+
         chunk_words = []
         for w in _get(resp, "words", []) or []:
             start, end = _get(w, "start"), _get(w, "end")
@@ -229,7 +276,7 @@ def transcribe(chunks: list[Path], chunk_sec: int = 900):
                 })
         if not chunk_words and chunk_segments:
             log.warning(
-                "Whisper returned no word timestamps for chunk=%s; using approximate segment alignment",
+                "Whisper returned no word timestamps for chunk=%s; deriving approximate word alignment",
                 idx + 1,
             )
             for segment in chunk_segments:
@@ -245,23 +292,56 @@ def transcribe(chunks: list[Path], chunk_sec: int = 900):
                         "end": word["end"] + offset,
                     })
         words.extend(chunk_words)
+        log.info(
+            "Whisper chunk=%s/%s detected_language=%s segments=%s words=%s",
+            idx + 1, len(chunks), _get(resp, "language") or "unknown",
+            len(chunk_segments), len(chunk_words),
+        )
+
+    segments.sort(key=lambda item: (item["start"], item["end"]))
     words.sort(key=lambda item: (item["start"], item["end"]))
+    if not segments:
+        raise RuntimeError("Whisper returned no transcript segments. Check the source audio and language.")
+    if not words:
+        raise RuntimeError("Whisper returned transcript text but no usable word timestamps.")
+    log.info(
+        "Whisper transcription complete model=%s language=%s total_segments=%s total_words=%s",
+        model, lang or "unknown", len(segments), len(words),
+    )
     return segments, words, lang
 
 
+def _transcript_cache_path(key: str) -> Path:
+    """Separate cached transcripts by ASR version and all accuracy-affecting settings."""
+    fingerprint = "|".join((
+        TRANSCRIPT_CACHE_VERSION,
+        C.WHISPER_MODEL,
+        getattr(C, "WHISPER_LANGUAGE", ""),
+        getattr(C, "WHISPER_PROMPT", ""),
+    ))
+    signature = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:12]
+    return Path(C.CACHE_DIR) / f"{key}_{signature}.json"
+
+
 def load_transcript(key: str):
-    p = Path(C.CACHE_DIR) / f"{key}.json"
+    p = _transcript_cache_path(key)
     if p.exists():
         try:
-            return json.loads(p.read_text())
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if data.get("_cache_version") == TRANSCRIPT_CACHE_VERSION:
+                return data
         except Exception:
-            return None
+            log.warning("Ignoring unreadable transcript cache for video=%s", key)
     return None
 
 
 def save_transcript(key: str, data: dict) -> None:
     Path(C.CACHE_DIR).mkdir(parents=True, exist_ok=True)
-    (Path(C.CACHE_DIR) / f"{key}.json").write_text(json.dumps(data))
+    payload = dict(data)
+    payload["_cache_version"] = TRANSCRIPT_CACHE_VERSION
+    _transcript_cache_path(key).write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def prune_cache(days: int = 7) -> None:
