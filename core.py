@@ -58,6 +58,7 @@ class Opts:
     remove_silence: bool = True
     logo_path: str = ""
     subtitle_language: str = "off"
+    outro_text: str = "Follow for more"
 
 
 # --------------------------------------------------------------------------- #
@@ -543,6 +544,11 @@ def make_clip(
             log.exception("Render with grade failed; retrying plain")
             grade_vf = None
             V.render(raw, plan, ass_name, out, workdir, grade_vf=None, music=None, logo_path=opts.logo_path)
+    if opts.outro_text:
+        try:
+            out = V.append_outro(out, workdir, idx, opts.outro_text)
+        except Exception:
+            log.exception("Outro rendering failed; keeping clip without outro")
     log.info("Clip %s stage=render success bytes=%s", idx, os.path.getsize(out))
     if os.path.getsize(out) > C.TG_FILE_LIMIT:
         V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track, logo_path=opts.logo_path)
