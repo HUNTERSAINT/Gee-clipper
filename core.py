@@ -54,6 +54,7 @@ class Opts:
     grade: bool = True
     watermark: str = ""
     caption_style: str = "bold"
+    export_formats: str = "all"  # vertical only, or all social aspect ratios
 
 
 # --------------------------------------------------------------------------- #
@@ -500,6 +501,17 @@ def make_clip(
         V.render(raw, plan, ass_name, out, workdir, crf=32, grade_vf=grade_vf, music=track)
 
     result = {"video": out, "layout": plan["kind"], "track": track[1] if track else None}
+    try:
+        vtt_path = os.path.join(workdir, f"subtitles_{idx}.vtt")
+        V.build_vtt(words, clip["start"], clip["end"], vtt_path)
+        result["vtt"] = vtt_path
+    except Exception:
+        log.exception("WebVTT export failed")
+    if opts.export_formats == "all":
+        try:
+            result["variants"] = V.render_social_variants(out, workdir, idx)
+        except Exception:
+            log.exception("Square/landscape export failed; keeping vertical version")
     try:
         srt_path = os.path.join(workdir, f"subtitles_{idx}.srt")
         V.build_srt(words, clip["start"], clip["end"], srt_path)
