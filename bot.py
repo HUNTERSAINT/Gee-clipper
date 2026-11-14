@@ -59,6 +59,7 @@ HELP = (
     "/preset viral|podcast|educational|cinematic|clean\n"
     "/queue, /cancel, /history\n"
     "/favorites, /unfavorite ID, /analytics\n"
+    "/transcript, /summary, /titles - tools for your last video\n"
     "/watermark YourBrand (or off)\n"
     "/formats all|vertical - 9:16, 1:1 and 16:9 exports\n"
     "/silence on|off - trim long pauses\n"
@@ -406,6 +407,63 @@ async def unblock_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"User {target} unblocked.")
 
 
+async def transcript_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    key = ctx.user_data.get("last_transcript_key")
+    if not key:
+        await update.message.reply_text("Send a YouTube link first, then use /transcript.")
+        return
+    data = core.load_transcript(key)
+    if not data or not data.get("segments"):
+        await update.message.reply_text("Cached transcript not found. Send the link again to rebuild it.")
+        return
+    lines = [f"TRANSCRIPT — {ctx.user_data.get('last_video_title', 'YouTube video')}", ""]
+    for segment in data["segments"]:
+        lines.append(f"[{core.fmt_ts(segment['start'])}] {segment.get('text','').strip()}")
+    folder = tempfile.mkdtemp(prefix="gee_transcript_")
+    path = os.path.join(folder, "gee-clipper-transcript.txt")
+    try:
+        with open(path, "w", encoding="utf-8") as output:
+            output.write("\n".join(lines))
+        with open(path, "rb") as output:
+            await update.message.reply_document(output, filename="gee-clipper-transcript.txt")
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+async def summary_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    key = ctx.user_data.get("last_transcript_key")
+    data = core.load_transcript(key) if key else None
+    if not data or not data.get("segments"):
+        await update.message.reply_text("Send a YouTube link first, then use /summary.")
+        return
+    status = await update.message.reply_text("Creating AI summary and chapter notes...")
+    try:
+        result = await asyncio.to_thread(core.summarize_transcript, data["segments"])
+        for offset in range(0, len(result), 3500):
+            await update.message.reply_text(result[offset:offset + 3500])
+        await status.delete()
+    except Exception as exc:
+        log.exception("transcript summary failed")
+        await status.edit_text(f"Summary failed: {friendly_error(exc)}")
+
+
+async def titles_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    key = ctx.user_data.get("last_transcript_key")
+    data = core.load_transcript(key) if key else None
+    if not data or not data.get("segments"):
+        await update.message.reply_text("Send a YouTube link first, then use /titles.")
+        return
+    status = await update.message.reply_text("Generating title and hook ideas...")
+    try:
+        titles = await asyncio.to_thread(core.generate_title_ideas, data["segments"])
+        await status.edit_text("🎯 ALTERNATIVE TITLES AND HOOKS\n\n" + "\n".join(
+            f"{i}. {title}" for i, title in enumerate(titles, 1)
+        ))
+    except Exception as exc:
+        log.exception("title generation failed")
+        await status.edit_text(f"Title generation failed: {friendly_error(exc)}")
+
+
 async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rows = S.history(update.effective_user.id, 10)
     if not rows:
@@ -456,11 +514,12 @@ async def analytics_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def favorite_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     if query.data == "fav:done":
+        await query.answer("Already saved.")
         return
     clip_id = query.data.split(":", 1)[1]
     if S.favorite(update.effective_user.id, clip_id):
+        await query.answer("Saved to favourites.")
         await query.edit_message_reply_markup(
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("⭐ Saved to favourites", callback_data="fav:done")
@@ -603,6 +662,8 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
         else:
             await step("Using cached transcript...")
         segments, words = data["segments"], data["words"]
+        ctx.user_data["last_transcript_key"] = key
+        ctx.user_data["last_video_title"] = str(info.get("title") or "YouTube video")[:120]
         if not segments:
             await step("Couldn't find any speech in this video.")
             return
@@ -751,6 +812,9 @@ async def post_init(app: Application):
             BotCommand("favorites", "Your saved clips"),
             BotCommand("unfavorite", "Remove a saved clip"),
             BotCommand("analytics", "Your usage analytics"),
+            BotCommand("transcript", "Download last transcript"),
+            BotCommand("summary", "AI summary and chapters"),
+            BotCommand("titles", "Generate title ideas"),
             BotCommand("watermark", "Set or remove text watermark"),
             BotCommand("clearlogo", "Remove uploaded brand logo"),
             BotCommand("clearmusic", "Remove uploaded soundtrack"),
@@ -806,6 +870,9 @@ def main():
     app.add_handler(CommandHandler("favorites", favorites_cmd))
     app.add_handler(CommandHandler("unfavorite", unfavorite_cmd))
     app.add_handler(CommandHandler("analytics", analytics_cmd))
+    app.add_handler(CommandHandler("transcript", transcript_cmd))
+    app.add_handler(CommandHandler("summary", summary_cmd))
+    app.add_handler(CommandHandler("titles", titles_cmd))
     app.add_handler(CallbackQueryHandler(favorite_callback, pattern=r"^fav:"))
     app.add_handler(CommandHandler("watermark", watermark_cmd))
     app.add_handler(CommandHandler("clearlogo", clearlogo_cmd))

@@ -595,3 +595,55 @@ def make_clip(
         log.exception("thumbnail generation failed")
     log.info("Clip %s stage=complete", idx)
     return result
+
+
+def summarize_transcript(segments) -> str:
+    """Produce chaptered show notes from transcript windows while preserving timestamps."""
+    windows = build_windows(segments, window_sec=1800)
+    if not windows:
+        return "No transcript text was available."
+    reports = []
+    prompt = (
+        "You are an editor creating useful show notes from a transcript. "
+        "Summarise this section in 2-4 concise bullets, identify up to 3 chapter headings "
+        "with approximate timestamps copied from the transcript, and list key takeaways. "
+        "Do not invent facts. Return JSON only: "
+        '{"summary":"...","chapters":[{"time":"00:00","title":"..."}],"takeaways":["..."]}.'
+    )
+    for index, window in enumerate(windows[:8], 1):
+        try:
+            response = _ask(C.LLM_MODEL, prompt, window[:18000])
+        except Exception:
+            response = _ask(C.LLM_FALLBACK_MODEL, prompt, window[:18000])
+        data = json.loads(response.choices[0].message.content)
+        section = [f"PART {index}", str(data.get("summary", "")).strip()]
+        chapters = data.get("chapters") or []
+        if chapters:
+            section.append("Chapters: " + "; ".join(
+                f"{x.get('time','')} {x.get('title','')}" for x in chapters[:3]
+            ))
+        takeaways = data.get("takeaways") or []
+        if takeaways:
+            section.append("Key takeaways: " + " • ".join(str(x) for x in takeaways[:5]))
+        reports.append("\\n".join(x for x in section if x))
+    return "\\n\\n".join(reports)
+
+
+def generate_title_ideas(segments) -> list[str]:
+    """Generate accurate alternate titles and hooks from transcript evidence."""
+    transcript = "\\n".join(
+        f"[{s['start']:.0f}s] {s.get('text','')}" for s in segments
+    )[:14000]
+    prompt = (
+        "You are a short-form video headline editor. Generate 10 distinct, punchy, "
+        "accurate clip titles/hooks grounded only in this transcript. Mix curiosity, "
+        "specific benefit, surprising claim and story-led styles. Avoid fake promises, "
+        "fabricated quotes and generic clickbait. Return JSON only: "
+        '{"titles":["..."]}. Keep each under 9 words.'
+    )
+    try:
+        response = _ask(C.LLM_MODEL, prompt, transcript)
+    except Exception:
+        response = _ask(C.LLM_FALLBACK_MODEL, prompt, transcript)
+    values = json.loads(response.choices[0].message.content).get("titles", [])
+    return [str(x).strip()[:100] for x in values[:10] if str(x).strip()]

@@ -21,7 +21,7 @@ BASE = (
     "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/"
     "John_Bartmann/Public_Domain_Soundtrack_Music_Album_One/"
 )
-CACHE = os.getenv("MUSIC_CACHE_DIR", "/tmp/gee-clipper-music")
+CACHE = os.getenv("MUSIC_CACHE_DIR", os.path.join(os.getenv("DATA_DIR", "data"), "music"))
 SR = 11025
 
 # slug: (file, {mood: weight}, rough energy 1-5 used until real analysis exists)

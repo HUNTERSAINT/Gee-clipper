@@ -149,3 +149,10 @@ credentials, user authorization, public callback URLs and payment-provider crede
 They are not enabled by dummy tokens. No platform credentials or payment keys are stored
 in the repository. Configure provider integrations only after obtaining approved developer
 access; never commit API secrets.
+
+
+## AI creator tools
+
+After processing a video, /transcript downloads its timestamped transcript, /summary creates
+AI show notes and chapter suggestions, and /titles generates alternative hooks and titles.
+These are on-demand Groq requests and use your configured model quota.
