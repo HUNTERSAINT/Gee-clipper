@@ -42,7 +42,9 @@ class YtDlpLogBridge:
         log.error("yt-dlp: %s", _safe_ydl_message(message))
 
 
-groq = Groq(api_key=C.GROQ_API_KEY or "missing")
+# Disable SDK-level retries so a 429 cannot silently freeze the Telegram job
+# for several minutes. We switch models explicitly in pick_clips instead.
+groq = Groq(api_key=C.GROQ_API_KEY or "missing", max_retries=0, timeout=90)
 
 
 @dataclass
@@ -291,37 +293,66 @@ def build_windows(segments, heat_fn=None, window_sec: int = 600):
 
 
 def _ask(model: str, prompt: str, text: str):
-    return with_retry(
-        lambda: groq.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": text},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3,
-        ),
-        tries=4,
+    """Make one bounded request; model fallback is handled by pick_clips."""
+    return groq.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+        timeout=90,
     )
 
 
-def pick_clips(segments, n_clips: int, heatmap=None):
+def pick_clips(segments, n_clips: int, heatmap=None, progress=None):
+    """Analyse transcript windows and report progress; switch models on provider errors."""
     heat_fn = heat_for(heatmap)
     prompt = _prompt(heat_fn is not None, n_clips)
+    windows = build_windows(segments, heat_fn)
     candidates = []
-    for text in build_windows(segments, heat_fn):
+    failures = []
+    for index, text in enumerate(windows, 1):
+        if progress:
+            try:
+                progress(f"Analysing section {index}/{len(windows)} of {len(segments)} transcript segments...")
+            except Exception:
+                log.debug("Analysis progress callback failed", exc_info=True)
         try:
-            resp = _ask(C.LLM_MODEL, prompt, text)
-        except RuntimeError:
-            if not C.LLM_FALLBACK_MODEL:
-                raise
-            log.warning("Primary model rate-limited, using fallback")
-            resp = _ask(C.LLM_FALLBACK_MODEL, prompt, text)
-        try:
-            data = json.loads(resp.choices[0].message.content)
+            try:
+                resp = _ask(C.LLM_MODEL, prompt, text)
+                used_model = C.LLM_MODEL
+            except Exception as primary_error:
+                if not C.LLM_FALLBACK_MODEL or C.LLM_FALLBACK_MODEL == C.LLM_MODEL:
+                    raise
+                log.warning(
+                    "Primary analysis model failed section=%s/%s model=%s error=%s; trying fallback=%s",
+                    index, len(windows), C.LLM_MODEL, primary_error, C.LLM_FALLBACK_MODEL,
+                )
+                if progress:
+                    try:
+                        progress(f"Section {index}/{len(windows)}: primary AI busy; switching to backup...")
+                    except Exception:
+                        log.debug("Analysis progress callback failed", exc_info=True)
+                resp = _ask(C.LLM_FALLBACK_MODEL, prompt, text)
+                used_model = C.LLM_FALLBACK_MODEL
+            content = _get(_get(resp.choices[0], "message"), "content", "")
+            data = json.loads(content or "{}")
             candidates.extend(data.get("clips", []))
-        except Exception:
-            log.warning("Bad JSON from LLM, skipping a window")
+            log.info("Analysis section=%s/%s success model=%s clips=%s", index, len(windows), used_model, len(data.get("clips", [])))
+        except Exception as error:
+            failures.append(f"section {index}: {type(error).__name__}: {error}")
+            log.exception("Analysis section=%s/%s failed on primary and fallback", index, len(windows))
+        if progress:
+            try:
+                progress(f"Analysed section {index}/{len(windows)} of {len(windows)}.")
+            except Exception:
+                log.debug("Analysis progress callback failed", exc_info=True)
+    if not candidates and failures:
+        raise RuntimeError(
+            "AI could not analyse the transcript. " + "; ".join(failures[:2])
+        )
 
     clean = []
     for c in candidates:

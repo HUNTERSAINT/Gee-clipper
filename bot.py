@@ -796,9 +796,15 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
             await step("Couldn't find any speech in this video.")
             return
 
-        await step("Finding the best moments...")
+        await step(f"Finding the best moments across {len(segments)} transcript segments...")
+        loop = asyncio.get_running_loop()
+
+        def analysis_progress(label):
+            # The picker runs in a worker thread; marshal Telegram updates safely.
+            asyncio.run_coroutine_threadsafe(step(label), loop)
+
         clips = await asyncio.to_thread(
-            core.pick_clips, segments, opts.clips, info.get("heatmap")
+            core.pick_clips, segments, opts.clips, info.get("heatmap"), analysis_progress
         )
         if not clips:
             await step("Couldn't find good clip moments in this video.")
