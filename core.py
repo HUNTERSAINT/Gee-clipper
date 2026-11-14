@@ -55,6 +55,7 @@ class Opts:
     watermark: str = ""
     caption_style: str = "bold"
     export_formats: str = "all"  # vertical only, or all social aspect ratios
+    remove_silence: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -443,6 +444,17 @@ def make_clip(
 
     report(f"Downloading video segment for clip {idx}...")
     raw = download_section(url, clip["start"], clip["end"], workdir, f"raw_{idx}")
+    clip = dict(clip)
+    clip_words = words
+    if opts.remove_silence:
+        try:
+            raw, clip_words, compact_duration = V.remove_silence(
+                raw, words, clip["start"], clip["end"]
+            )
+            clip["start"], clip["end"] = 0.0, compact_duration
+        except Exception:
+            log.exception("Silence trimming failed; keeping original clip timing")
+            clip_words = words
     report(f"Analysing video framing for clip {idx}...")
     log.info("Clip %s stage=probe starting", idx)
     meta = V.probe(raw)
@@ -452,7 +464,7 @@ def make_clip(
     if opts.captions or opts.hook or opts.watermark:
         ass_name = f"cap_{idx}.ass"
         V.build_ass(
-            words, clip["start"], clip["end"], os.path.join(workdir, ass_name),
+            clip_words, clip["start"], clip["end"], os.path.join(workdir, ass_name),
             hook=hook_text if opts.hook else None, captions=opts.captions,
             watermark=opts.watermark, caption_style=opts.caption_style,
         )
@@ -503,7 +515,7 @@ def make_clip(
     result = {"video": out, "layout": plan["kind"], "track": track[1] if track else None}
     try:
         vtt_path = os.path.join(workdir, f"subtitles_{idx}.vtt")
-        V.build_vtt(words, clip["start"], clip["end"], vtt_path)
+        V.build_vtt(clip_words, clip["start"], clip["end"], vtt_path)
         result["vtt"] = vtt_path
     except Exception:
         log.exception("WebVTT export failed")
@@ -514,7 +526,7 @@ def make_clip(
             log.exception("Square/landscape export failed; keeping vertical version")
     try:
         srt_path = os.path.join(workdir, f"subtitles_{idx}.srt")
-        V.build_srt(words, clip["start"], clip["end"], srt_path)
+        V.build_srt(clip_words, clip["start"], clip["end"], srt_path)
         result["subtitles"] = srt_path
     except Exception:
         log.exception("subtitle export failed")
