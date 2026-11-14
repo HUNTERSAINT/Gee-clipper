@@ -384,6 +384,12 @@ async def process(update: Update, url: str, opts: core.Opts, ctx: ContextTypes.D
                         if thumb:
                             thumb.close()
                 sent += 1
+                if res.get("subtitles"):
+                    try:
+                        with open(res["subtitles"], "rb") as subtitle_file:
+                            await msg.reply_document(subtitle_file, filename=f"gee-clipper-{i}.srt", caption="📝 Subtitles (SRT)")
+                    except Exception:
+                        log.exception("subtitle file send failed")
                 try:
                     await msg.reply_text(build_caption_pack(clip))
                 except Exception:
