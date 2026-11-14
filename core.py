@@ -394,6 +394,33 @@ def download_section(url: str, start: float, end: float, workdir: str, base: str
     return files[0]
 
 
+
+def classify_music_mood(text: str) -> str:
+    """Use the language model to understand the clip and choose a soundtrack mood."""
+    allowed = {"uplifting", "dramatic", "emotional", "energetic", "calm", "funny"}
+    prompt = (
+        "Classify the emotional tone and pacing of this short video transcript. "
+        "Choose the best background music mood from: uplifting, dramatic, emotional, "
+        "energetic, calm, funny. Judge the meaning and delivery implied by the words, "
+        "not isolated keyword matches. Return JSON only: {\"mood\":\"one category\"}."
+    )
+    try:
+        try:
+            response = _ask(C.LLM_MODEL, prompt, (text or "")[:5000])
+        except Exception:
+            if not C.LLM_FALLBACK_MODEL:
+                raise
+            response = _ask(C.LLM_FALLBACK_MODEL, prompt, (text or "")[:5000])
+        result = json.loads(response.choices[0].message.content)
+        mood = str(result.get("mood", "")).strip().lower()
+        if mood not in allowed:
+            raise ValueError("LLM returned an unsupported soundtrack mood")
+        return mood
+    except Exception:
+        log.exception("Soundtrack mood classification failed; using calm instrumental")
+        return "calm"
+
+
 def make_clip(
     url: str, words, clip: dict, idx: int, workdir: str, opts: Opts, progress=None
 ) -> dict:
@@ -427,7 +454,9 @@ def make_clip(
         if w.get("start", 0) >= clip["start"] and w.get("end", 0) <= clip["end"]
     )
     mood_text = " ".join((clip.get("title", ""), clip.get("description", ""), spoken_text))
-    V.render(raw, plan, ass_name, out, workdir, mood_text=mood_text)
+    music_mood = classify_music_mood(mood_text)
+    log.info("Clip %s soundtrack mood=%s", idx, music_mood)
+    V.render(raw, plan, ass_name, out, workdir, mood_text=music_mood)
     log.info("Clip %s stage=render success bytes=%s", idx, os.path.getsize(out))
     if os.path.getsize(out) > C.TG_FILE_LIMIT:
         V.render(raw, plan, ass_name, out, workdir, crf=32)
