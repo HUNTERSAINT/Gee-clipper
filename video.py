@@ -185,6 +185,37 @@ def _ass_text(s: str) -> str:
     return re.sub(r"[{}\\]", "", s).upper()
 
 
+def _srt_time(t: float) -> str:
+    ms = max(0, int(round(t * 1000)))
+    hours, ms = divmod(ms, 3600000)
+    minutes, ms = divmod(ms, 60000)
+    seconds, ms = divmod(ms, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{ms:03d}"
+
+
+def build_srt(words, clip_start: float, clip_end: float, path: str):
+    selected = [w for w in words if w["start"] >= clip_start - 0.05 and w["end"] <= clip_end + 0.3]
+    groups, current = [], []
+    for word in selected:
+        if current and (len(current) >= 8 or word["start"] - current[0]["start"] >= 4.0):
+            groups.append(current)
+            current = []
+        current.append(word)
+        if word["word"].rstrip().endswith((".", "?", "!")):
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    blocks = []
+    for index, group in enumerate(groups, 1):
+        start = max(0.0, group[0]["start"] - clip_start)
+        end = max(start + 0.12, group[-1]["end"] - clip_start)
+        text = " ".join(w["word"].strip() for w in group).strip()
+        blocks.append(f"{index}\\n{_srt_time(start)} --> {_srt_time(end)}\\n{text}")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\\n\\n".join(blocks) + ("\\n" if blocks else ""))
+
+
 def build_ass(words, clip_start, clip_end, path, hook=None, hook_secs=3.0,
               captions=True, watermark=None):
     header = (
